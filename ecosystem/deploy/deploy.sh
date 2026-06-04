@@ -36,13 +36,17 @@ echo "==> Миграция БД экосистемы и seed приложени�
 docker compose -f docker-compose.prod.yml --env-file .env exec -T auth-service \
   sh -c "npx prisma db push && npx tsx prisma/seed.ts"
 
-echo "==> Prisma/SQLite в приложениях..."
-docker compose -f docker-compose.prod.yml --env-file .env exec -T drops \
-  sh -c "npx prisma db push" 2>/dev/null || true
-docker compose -f docker-compose.prod.yml --env-file .env exec -T bloggers \
-  sh -c "npx prisma db push" 2>/dev/null || true
-docker compose -f docker-compose.prod.yml --env-file .env exec -T zarplaty \
-  sh -c "npx prisma db push" 2>/dev/null || true
+echo "==> Prisma/SQLite в приложениях (таймаут 3 мин на сервис)..."
+# Сайт уже поднят после 'up -d'; этот шаг можно прервать Ctrl+C — на HTTPS не влияет.
+prisma_sqlite_push() {
+  local svc="$1"
+  echo "    → $svc"
+  timeout 180 docker compose -f docker-compose.prod.yml --env-file .env exec -T "$svc" \
+    sh -c "npx prisma db push" 2>/dev/null || echo "    ⚠ $svc: пропуск (таймаут или не нужен)"
+}
+prisma_sqlite_push drops
+prisma_sqlite_push bloggers
+prisma_sqlite_push zarplaty
 
 echo ""
 echo "Готово: https://${DOMAIN}"

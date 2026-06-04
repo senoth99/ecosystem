@@ -1,7 +1,18 @@
 # Reverse proxy + автоматический HTTPS (Let's Encrypt)
 # DOMAIN и ACME_EMAIL задаются в .env
 
+{
+	email {$ACME_EMAIL}
+	# Только production Let's Encrypt (без staging/ZeroSSL fallback)
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	# Авто-редирект :80→:443 не должен трогать /.well-known/acme-challenge/
+	auto_https disable_redirects
+}
+
 {$DOMAIN} {
+	@toHttps not path /.well-known/acme-challenge/*
+	redir @toHttps https://{host}{uri} permanent
+
 	encode gzip zstd
 
 	# Экосистема: API auth

@@ -79,7 +79,32 @@ curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
 ```
 
-## 5. Проверка
+## 5. TLS / Caddy
+
+Если в логах `Timeout during connect` или `challenge failed`, а локально `curl http://127.0.0.1` отвечает:
+
+1. Откройте **80/tcp и 443/tcp** в файрволе панели VPS (не только `ufw` на сервере).
+2. В `Caddyfile` должен быть `acme_ca https://acme-v02.api.letsencrypt.org/directory` (не staging). Сбросьте старые ACME-данные:
+
+```bash
+docker compose -f docker-compose.prod.yml stop caddy
+docker compose -f docker-compose.prod.yml run --rm -v casher-ecosystem_caddy_data:/data alpine \
+  sh -c 'rm -rf /data/caddy/acme/* /data/caddy/certificates/* /data/caddy/locks/*'
+docker compose -f docker-compose.prod.yml exec caddy rm -f /config/caddy/autosave.json 2>/dev/null || true
+docker compose -f docker-compose.prod.yml up -d caddy
+```
+
+Если в логах `acme-staging` или `zerossl` — обновите `Caddyfile` и выполните команды выше.
+
+3. Проверка с ноутбука (путь ACME **не** должен отдавать 308):
+
+```bash
+curl -sI "http://eco.cashercollection.com/.well-known/acme-challenge/test" | head -3
+```
+
+4. После `certificate obtained` в логах — webhook Telegram (см. §4).
+
+## 6. Проверка
 
 1. Откройте `https://DOMAIN` — страница входа.
 2. Войдите через Telegram (суперадмины: `@contact_voropaev`, `@ivanvoropaeff`).
