@@ -1,7 +1,7 @@
 # Production: docker build --build-arg NEXT_PUBLIC_BASE_PATH=/bloggers -t bloggers .
 FROM node:20-alpine AS base
 WORKDIR /app
-RUN apk add --no-cache openssl libc6-compat
+RUN apk add --no-cache openssl
 
 FROM base AS deps
 COPY package.json package-lock.json ./

@@ -1,6 +1,6 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-RUN apk add --no-cache openssl libc6-compat
+RUN apk add --no-cache openssl
 COPY package.json ./
 COPY prisma ./prisma
 RUN npm install --ignore-scripts
@@ -13,7 +13,7 @@ RUN npx prisma generate && npm run build
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apk add --no-cache openssl libc6-compat
+RUN apk add --no-cache openssl
 COPY package.json ./
 COPY prisma ./prisma
 COPY --from=build /app/node_modules ./node_modules
