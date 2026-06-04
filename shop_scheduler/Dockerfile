@@ -1,6 +1,9 @@
 # docker build --build-arg NEXT_PUBLIC_BASE_PATH=/shop -t shop-scheduler .
 
 FROM node:22-bookworm-slim AS base
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 FROM base AS deps
