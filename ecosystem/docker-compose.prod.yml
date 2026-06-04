@@ -106,6 +106,19 @@ services:
       - bloggers_data:/data/app
     networks: [internal]
 
+  bloggers-migrate:
+    profiles: [deploy]
+    build:
+      <<: *build
+      context: ../bloggers
+      target: migrator
+    volumes:
+      - bloggers_data:/data/app
+    environment:
+      DATABASE_URL: file:/data/app/panel.sqlite
+    networks: [internal]
+    restart: "no"
+
   drops:
     build:
       <<: *build
@@ -126,6 +139,19 @@ services:
       CATALOG_SERVICE_URL: http://catalog:4002
       MEDIA_SERVICE_URL: http://media:4003
     networks: [internal]
+
+  drops-migrate:
+    profiles: [deploy]
+    build:
+      <<: *build
+      context: ../drops/web
+      target: migrator
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://drops:${DROPS_DB_PASSWORD:-drops}@postgres:5432/drops
+    networks: [internal]
+    restart: "no"
 
   production-scheduler:
     build:
@@ -248,6 +274,19 @@ services:
     volumes:
       - zarplaty_data:/data/app
     networks: [internal]
+
+  zarplaty-migrate:
+    profiles: [deploy]
+    build:
+      <<: *build
+      context: ../zarplaty
+      target: migrator
+    volumes:
+      - zarplaty_data:/data/app
+    environment:
+      DATABASE_URL: file:/data/app/salary.db
+    networks: [internal]
+    restart: "no"
 
   caddy:
     image: caddy:2-alpine

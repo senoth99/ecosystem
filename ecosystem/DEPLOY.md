@@ -70,6 +70,16 @@ chmod +x deploy/deploy.sh deploy/setup-server.sh
 
 Скрипт соберёт образы, поднимет контейнеры, применит схему БД и seed приложений.
 
+В начале лога должно быть: **`deploy.sh v3 (one-shot Prisma migrate)`**.  
+Если видите старую строку `Prisma/SQLite в приложениях` — на сервере не обновлён репозиторий: `git pull` и снова `./deploy/deploy.sh`.
+
+Только миграции приложений (без полного деплоя):
+
+```bash
+chmod +x deploy/migrate-apps.sh
+./deploy/migrate-apps.sh
+```
+
 ## 4. Telegram webhook
 
 ```bash

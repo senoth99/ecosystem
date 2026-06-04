@@ -17,6 +17,10 @@ ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npx prisma generate && npm run build
 
+FROM builder AS migrator
+WORKDIR /app
+CMD ["sh", "-c", "db=\"${DATABASE_URL#file:}\"; mkdir -p \"$(dirname \"$db\")\"; ./node_modules/.bin/prisma db push --skip-generate"]
+
 FROM base AS runner
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

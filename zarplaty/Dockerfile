@@ -16,6 +16,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATABASE_URL=file:./dev.db
 RUN npx prisma generate && npm run build
 
+FROM build AS migrator
+WORKDIR /app
+CMD ["sh", "-c", "db=\"${DATABASE_URL#file:}\"; mkdir -p \"$(dirname \"$db\")\"; ./node_modules/.bin/prisma db push --skip-generate"]
+
 FROM build AS public-files
 RUN mkdir -p /out/public && \
     if [ -d public ]; then cp -a public/. /out/public/; fi
@@ -40,4 +44,4 @@ USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-CMD ["sh", "-c", "npx prisma db push --skip-generate 2>/dev/null || true; node server.js"]
+CMD ["node", "server.js"]

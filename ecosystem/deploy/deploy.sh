@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Деплой экосистемы на VPS (Docker + Caddy + HTTPS)
+# v3 — Prisma через one-shot контейнеры (не exec в работающие приложения)
 set -euo pipefail
 
+DEPLOY_SCRIPT_VERSION=3
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+COMPOSE_FILE="docker-compose.prod.yml"
+COMPOSE=(docker compose -f "$COMPOSE_FILE" --env-file .env)
+COMPOSE_DEPLOY=(docker compose -f "$COMPOSE_FILE" --env-file .env --profile deploy)
 
 if [[ ! -f .env ]]; then
   echo "Создайте .env из шаблона:"
@@ -23,30 +29,52 @@ for var in DOMAIN SESSION_SECRET POSTGRES_PASSWORD PUBLIC_BASE_URL TELEGRAM_BOT_
   fi
 done
 
-echo "==> Сборка образов..."
-docker compose -f docker-compose.prod.yml --env-file .env build
+echo "==> deploy.sh v${DEPLOY_SCRIPT_VERSION} (one-shot Prisma migrate)"
+
+prisma_migrate_job() {
+  local job="$1"
+  local required="${2:-optional}"
+  echo "==> Prisma migrate: $job (таймаут 3 мин)..."
+  set +e
+  timeout 180 "${COMPOSE_DEPLOY[@]}" run --rm --no-TTY "$job"
+  local code=$?
+  set -e
+  if [[ $code -eq 0 ]]; then
+    echo "    ✓ $job"
+    return 0
+  fi
+  if [[ "$required" == "required" ]]; then
+    echo "    ✗ $job — миграция не прошла (код $code)"
+    exit 1
+  fi
+  echo "    ⚠ $job — пропуск (код $code)"
+  return 0
+}
+
+echo "==> Сборка образов (включая *-migrate)..."
+"${COMPOSE_DEPLOY[@]}" build
 
 echo "==> Запуск стека..."
-docker compose -f docker-compose.prod.yml --env-file .env up -d
+"${COMPOSE[@]}" up -d
 
 echo "==> Ожидание Postgres..."
-sleep 8
+for _ in $(seq 1 30); do
+  if "${COMPOSE[@]}" exec -T postgres pg_isready -U "${POSTGRES_USER:-ecosystem}" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
 
 echo "==> Миграция БД экосистемы и seed приложений..."
-docker compose -f docker-compose.prod.yml --env-file .env exec -T auth-service \
+"${COMPOSE[@]}" exec -T auth-service \
   sh -c "npx prisma db push && npx tsx prisma/seed.ts"
 
-echo "==> Prisma/SQLite в приложениях (таймаут 3 мин на сервис)..."
-# Сайт уже поднят после 'up -d'; этот шаг можно прервать Ctrl+C — на HTTPS не влияет.
-prisma_sqlite_push() {
-  local svc="$1"
-  echo "    → $svc"
-  timeout 180 docker compose -f docker-compose.prod.yml --env-file .env exec -T "$svc" \
-    sh -c "npx prisma db push" 2>/dev/null || echo "    ⚠ $svc: пропуск (таймаут или не нужен)"
-}
-prisma_sqlite_push drops
-prisma_sqlite_push bloggers
-prisma_sqlite_push zarplaty
+prisma_migrate_job drops-migrate required
+prisma_migrate_job bloggers-migrate optional
+prisma_migrate_job zarplaty-migrate optional
+
+echo "==> Перезапуск приложений после миграций..."
+"${COMPOSE[@]}" restart drops bloggers zarplaty 2>/dev/null || true
 
 echo ""
 echo "Готово: https://${DOMAIN}"
@@ -57,4 +85,5 @@ echo "    -d \"url=https://${DOMAIN}/api/eco/telegram/webhook\" \\"
 echo "    -d \"secret_token=\${TELEGRAM_WEBHOOK_SECRET}\""
 echo ""
 echo "Логи: docker compose -f docker-compose.prod.yml logs -f"
+echo "Только Prisma приложений: ./deploy/migrate-apps.sh"
 echo "Обновление: git pull && ./deploy/deploy.sh"
