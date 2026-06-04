@@ -24,24 +24,24 @@ for var in DOMAIN SESSION_SECRET POSTGRES_PASSWORD PUBLIC_BASE_URL TELEGRAM_BOT_
 done
 
 echo "==> Сборка образов..."
-docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml --env-file .env build
 
 echo "==> Запуск стека..."
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml --env-file .env up -d
 
 echo "==> Ожидание Postgres..."
 sleep 8
 
 echo "==> Миграция БД экосистемы и seed приложений..."
-docker compose -f docker-compose.prod.yml exec -T auth-service \
+docker compose -f docker-compose.prod.yml --env-file .env exec -T auth-service \
   sh -c "npx prisma db push && npx tsx prisma/seed.ts"
 
 echo "==> Prisma/SQLite в приложениях..."
-docker compose -f docker-compose.prod.yml exec -T drops \
+docker compose -f docker-compose.prod.yml --env-file .env exec -T drops \
   sh -c "npx prisma db push" 2>/dev/null || true
-docker compose -f docker-compose.prod.yml exec -T bloggers \
+docker compose -f docker-compose.prod.yml --env-file .env exec -T bloggers \
   sh -c "npx prisma db push" 2>/dev/null || true
-docker compose -f docker-compose.prod.yml exec -T zarplaty \
+docker compose -f docker-compose.prod.yml --env-file .env exec -T zarplaty \
   sh -c "npx prisma db push" 2>/dev/null || true
 
 echo ""
