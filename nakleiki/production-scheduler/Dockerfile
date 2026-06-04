@@ -1,7 +1,7 @@
 # docker build --build-arg NEXT_PUBLIC_BASE_PATH=/nakleiki -t nakleiki .
 
 FROM node:22-alpine AS base
-RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories \
+RUN sed -i 's|https://|http://|g' /etc/apk/repositories \
     && apk update \
     && apk add --no-cache openssl
 WORKDIR /app

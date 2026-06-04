@@ -1,7 +1,7 @@
 # Production: docker build --build-arg NEXT_PUBLIC_BASE_PATH=/bloggers -t bloggers .
 FROM node:20-alpine AS base
 WORKDIR /app
-RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories \
+RUN sed -i 's|https://|http://|g' /etc/apk/repositories \
     && apk update \
     && apk add --no-cache openssl
 

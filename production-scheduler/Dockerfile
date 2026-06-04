@@ -1,7 +1,8 @@
 # docker build --build-arg NEXT_PUBLIC_BASE_PATH=/scheduler -t scheduler .
 
 FROM node:22-alpine AS base
-RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories \
+# HTTP repos: this build host fails TLS to Alpine HTTPS mirrors (apk: unspecified error).
+RUN sed -i 's|https://|http://|g' /etc/apk/repositories \
     && apk update \
     && apk add --no-cache openssl
 WORKDIR /app
