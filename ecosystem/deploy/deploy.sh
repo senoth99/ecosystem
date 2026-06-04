@@ -91,14 +91,24 @@ source "$(dirname "$0")/lib-postgres.sh"
 sync_drops_postgres_password
 
 prisma_migrate_job drops-migrate required 0
-prisma_migrate_job bloggers-migrate optional 300
-prisma_migrate_job zarplaty-migrate optional 300
+prisma_migrate_job bloggers-migrate optional 0
+prisma_migrate_job zarplaty-migrate optional 0
 
 echo "==> Перезапуск приложений после миграций..."
 "${COMPOSE[@]}" restart drops bloggers zarplaty 2>/dev/null || true
 
+echo "==> Проверка Caddy / HTTPS..."
+"${COMPOSE[@]}" up -d caddy
+sleep 5
+if curl -sfI --connect-timeout 5 -H "Host: ${DOMAIN}" "http://127.0.0.1/" >/dev/null; then
+  echo "    ✓ HTTP на localhost отвечает (Caddy работает)"
+else
+  echo "    ⚠ Caddy не отвечает на :80 — см. ./deploy/check-site.sh"
+fi
+
 echo ""
 echo "Готово: https://${DOMAIN}"
+echo "Не открывается в браузере? chmod +x deploy/check-site.sh deploy/fix-tls.sh && ./deploy/check-site.sh"
 echo ""
 echo "Telegram webhook:"
 echo "  curl -X POST \"https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/setWebhook\" \\"

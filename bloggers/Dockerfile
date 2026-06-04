@@ -21,7 +21,7 @@ FROM builder AS migrator
 WORKDIR /app
 ENV PRISMA_HIDE_UPDATE_MESSAGE=1
 ENV CI=true
-CMD ["sh", "-c", "db=\"${DATABASE_URL#file:}\"; mkdir -p \"$(dirname \"$db\")\"; ./node_modules/.bin/prisma db push"]
+CMD ["sh", "-c", "db=\"${DATABASE_URL#file:}\"; mkdir -p \"$(dirname \"$db\")\"; exec ./node_modules/.bin/prisma db push --skip-generate"]
 
 FROM base AS runner
 ENV NODE_ENV=production

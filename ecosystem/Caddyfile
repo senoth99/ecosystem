@@ -1,21 +1,11 @@
-# Reverse proxy + автоматический HTTPS (Let's Encrypt)
-# DOMAIN и ACME_EMAIL задаются в .env
-
+# Reverse proxy + HTTPS (Let's Encrypt). DOMAIN и ACME_EMAIL — из .env
 {
 	email {$ACME_EMAIL}
-	# Только production Let's Encrypt (без staging/ZeroSSL fallback)
-	acme_ca https://acme-v02.api.letsencrypt.org/directory
-	# Авто-редирект :80→:443 не должен трогать /.well-known/acme-challenge/
-	auto_https disable_redirects
 }
 
 {$DOMAIN} {
-	@toHttps not path /.well-known/acme-challenge/*
-	redir @toHttps https://{host}{uri} permanent
-
 	encode gzip zstd
 
-	# Экосистема: API auth
 	handle_path /api/eco/* {
 		reverse_proxy auth-service:4001
 	}
@@ -28,7 +18,6 @@
 		reverse_proxy media:4003
 	}
 
-	# Портал (главная, логин, админка)
 	@portal path / /login /login/* /admin /admin/*
 	handle @portal {
 		reverse_proxy portal:3100
@@ -38,7 +27,6 @@
 		reverse_proxy portal:3100
 	}
 
-	# Приложения (basePath в Next.js)
 	handle /bloggers* {
 		reverse_proxy bloggers:3000
 	}
