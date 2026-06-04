@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -8,6 +9,15 @@ import {
   StickerApplicationStatus
 } from "@/lib/stickerApplicationStatus";
 
+const stickerApplicationInclude = {
+  photos: true,
+  dailyReports: { orderBy: { reportDate: "desc" as const }, take: 5 }
+} satisfies Prisma.StickerApplicationInclude;
+
+type StickerApplicationLoaded = Prisma.StickerApplicationGetPayload<{
+  include: typeof stickerApplicationInclude;
+}>;
+
 const CreateOrUpdateSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   plateNumber: z.string().trim().min(3).max(32),
@@ -15,13 +25,8 @@ const CreateOrUpdateSchema = z.object({
 });
 
 async function normalizeLegacyApplication(
-  application: {
-    id: string;
-    status: string;
-    submittedAt: Date | null;
-    photos: { kind: string; path: string | null }[];
-  } | null
-) {
+  application: StickerApplicationLoaded | null
+): Promise<StickerApplicationLoaded | null> {
   if (!application) return null;
   if (application.status !== StickerApplicationStatus.PENDING_REVIEW || application.submittedAt) {
     return application;
@@ -29,7 +34,7 @@ async function normalizeLegacyApplication(
   return prisma.stickerApplication.update({
     where: { id: application.id },
     data: { status: StickerApplicationStatus.DRAFT },
-    include: { photos: true, dailyReports: { orderBy: { reportDate: "desc" }, take: 5 } }
+    include: stickerApplicationInclude
   });
 }
 
@@ -39,7 +44,7 @@ export async function GET() {
 
   let application = await prisma.stickerApplication.findUnique({
     where: { userId: user.id },
-    include: { photos: true, dailyReports: { orderBy: { reportDate: "desc" }, take: 5 } }
+    include: stickerApplicationInclude
   });
   application = await normalizeLegacyApplication(application);
   return NextResponse.json({ application });
@@ -115,7 +120,7 @@ export async function POST(req: Request) {
       submittedAt: submit ? now : null,
       moderatorComment: ""
     },
-    include: { photos: true, dailyReports: { orderBy: { reportDate: "desc" }, take: 5 } }
+    include: stickerApplicationInclude
   });
 
   return NextResponse.json({ application });

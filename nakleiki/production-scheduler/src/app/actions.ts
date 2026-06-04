@@ -14,7 +14,13 @@ import { userSchema } from "@/lib/validation";
 import { resolveAppPublicBaseUrl } from "@/lib/appUrl";
 import { writeAuditLog } from "@/lib/audit";
 import { UserRole } from "@/lib/enums";
+import { canOpenManagerPanel } from "@/lib/managerPanel";
 import { z } from "zod";
+
+const updateEmployeeNdaSignedSchema = z.object({
+  userId: z.string().min(1),
+  ndaSigned: z.boolean()
+});
 
 function normalizedTelegramSuperAdminUsername(): string {
   return (process.env.TELEGRAM_ADMIN_USERNAME ?? "").trim().toLowerCase().replace(/^@/, "");
@@ -383,6 +389,31 @@ export async function deleteEmployeeByUsername(usernameInput: string) {
     action: "DELETE_EMPLOYEE_BY_USERNAME",
     entityType: "User",
     entityId: username
+  });
+  revalidatePath("/admin/users");
+}
+
+export async function updateEmployeeNdaSigned(input: unknown) {
+  const actor = await requireAuth();
+  if (!canOpenManagerPanel(actor)) throw new Error("Недостаточно прав.");
+  const data = updateEmployeeNdaSignedSchema.parse(input);
+
+  const target = await prisma.user.findUnique({
+    where: { id: data.userId },
+    select: { id: true, role: true }
+  });
+  if (!target || target.role !== UserRole.EMPLOYEE) throw new Error("Сотрудник не найден.");
+
+  await prisma.user.update({
+    where: { id: data.userId },
+    data: { ndaSigned: data.ndaSigned }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "MANAGER_UPDATE_EMPLOYEE_NDA",
+    entityType: "User",
+    entityId: data.userId,
+    payload: { ndaSigned: data.ndaSigned }
   });
   revalidatePath("/admin/users");
 }
