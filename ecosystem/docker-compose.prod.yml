@@ -164,6 +164,7 @@ services:
     environment:
       <<: *auth-env
       PORT: "3000"
+      HOSTNAME: 0.0.0.0
       TZ: Europe/Moscow
       NEXT_PUBLIC_BASE_PATH: /scheduler
       ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
@@ -187,6 +188,7 @@ services:
     environment:
       <<: *auth-env
       PORT: "3000"
+      HOSTNAME: 0.0.0.0
       TZ: Europe/Moscow
       NEXT_PUBLIC_BASE_PATH: /shop
       ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
@@ -208,6 +210,7 @@ services:
     environment:
       <<: *auth-env
       PORT: "3000"
+      HOSTNAME: 0.0.0.0
       TZ: Europe/Moscow
       NEXT_PUBLIC_BASE_PATH: /nakleiki
       ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
