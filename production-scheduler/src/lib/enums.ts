@@ -1,0 +1,55 @@
+export const UserRole = {
+  SUPER_ADMIN: "SUPER_ADMIN",
+  ADMIN: "ADMIN",
+  EMPLOYEE: "EMPLOYEE"
+} as const;
+
+export type UserRole = (typeof UserRole)[keyof typeof UserRole];
+
+export const ShiftStatus = {
+  PLANNED: "PLANNED",
+  IN_PROGRESS: "IN_PROGRESS",
+  COMPLETED: "COMPLETED",
+  CANCELLED: "CANCELLED"
+} as const;
+
+export type ShiftStatus = (typeof ShiftStatus)[keyof typeof ShiftStatus];
+
+export const ShiftSource = {
+  SELF: "SELF",
+  ADMIN: "ADMIN"
+} as const;
+
+export type ShiftSource = (typeof ShiftSource)[keyof typeof ShiftSource];
+
+export const AppNotificationType = {
+  /** Руководитель/суперадмин записал пользователя в ячейку графика */
+  SHIFT_ASSIGNED_BY_MANAGER: "SHIFT_ASSIGNED_BY_MANAGER",
+  /** Запись в ячейке удалена руководителем */
+  SHIFT_REMOVED_BY_MANAGER: "SHIFT_REMOVED_BY_MANAGER",
+  /** Сотрудник сам записался на смену (график / форма) */
+  SHIFT_ADDED_BY_EMPLOYEE: "SHIFT_ADDED_BY_EMPLOYEE",
+  /** Сотрудник сам снял смену с графика */
+  SHIFT_REMOVED_BY_EMPLOYEE: "SHIFT_REMOVED_BY_EMPLOYEE",
+  /** Сотрудник отметился на производстве (QR) */
+  SHIFT_ARRIVAL: "SHIFT_ARRIVAL",
+  /** Сотрудник отправил отчёт по смене (с фото) */
+  SHIFT_REPORT_SUBMITTED: "SHIFT_REPORT_SUBMITTED"
+} as const;
+
+export type AppNotificationType = (typeof AppNotificationType)[keyof typeof AppNotificationType];
+
+export const ChatMessageType = {
+  SHIFT_REPORT: "SHIFT_REPORT",
+  SYSTEM: "SYSTEM",
+  MANUAL: "MANUAL"
+} as const;
+
+export type ChatMessageType = (typeof ChatMessageType)[keyof typeof ChatMessageType];
+
+export const ShiftReportStatus = {
+  PENDING_REVIEW: "PENDING_REVIEW",
+  ACCEPTED: "ACCEPTED"
+} as const;
+
+export type ShiftReportStatus = (typeof ShiftReportStatus)[keyof typeof ShiftReportStatus];

@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn-primary {
+    @apply min-h-12 rounded-lg bg-accent px-4 py-3 text-center text-[11px] font-bold uppercase tracking-display text-foreground transition-colors;
+    @apply hover:bg-foreground hover:text-background disabled:opacity-45;
+  }
+  .btn-secondary {
+    @apply min-h-12 rounded-lg border border-foreground/35 bg-transparent px-4 py-3 text-center text-[11px] font-bold uppercase tracking-display text-foreground transition-colors;
+    @apply hover:bg-foreground hover:text-background disabled:opacity-45;
+  }
+  .card {
+    @apply rounded-lg border border-border bg-card p-4;
+  }
+  .ui-page-title {
+    @apply text-lg font-bold uppercase tracking-display text-foreground sm:text-xl;
+  }
+
+  /* Плитки приложений: без смены цвета при hover */
+  .app-tile {
+    @apply no-underline;
+  }
+  .app-tile-icon {
+    filter: drop-shadow(0 0 0 transparent);
+  }
+  .header-icon-btn {
+    @apply text-foreground transition-none;
+  }
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  @apply min-h-[100dvh] bg-background font-sans text-foreground antialiased;
+  letter-spacing: 0.03em;
+}
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}

@@ -1,0 +1,27 @@
+{
+  "name": "zarplaty",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.8.2",
+    "jose": "^5.9.6",
+    "next": "^15.3.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "prisma": "^6.8.2",
+    "typescript": "^5.8.3"
+  }
+}

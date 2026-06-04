@@ -1,0 +1,267 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
+import { Camera, ClipboardCheck, ImagePlus } from "lucide-react";
+import { submitShiftReport } from "@/app/actions";
+import { compressImageFile } from "@/lib/clientImageCompress";
+
+function formatShiftReportSubmitError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("Unknown argument") && msg.includes("status")) {
+    return "На сервере не обновлены Prisma и база: выполните «npx prisma db push» и «npx prisma generate», затем перезапустите приложение.";
+  }
+  if (msg.startsWith("Invalid `prisma.") && msg.length > 200) {
+    return "Не удалось сохранить отчёт (ошибка базы). Обновите приложение или обратитесь к администратору.";
+  }
+  return msg;
+}
+
+export function CompleteShiftReportDialog({
+  shiftId,
+  headline
+}: {
+  shiftId: string;
+  headline: string;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [workplacePhotoPath, setWorkplacePhotoPath] = useState("");
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState("");
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [error, setError] = useState("");
+  const [pending, start] = useTransition();
+  const [mounted, setMounted] = useState(false);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [open]);
+
+  const resetPhoto = () => {
+    if (photoPreviewUrl.startsWith("blob:")) URL.revokeObjectURL(photoPreviewUrl);
+    setPhotoPreviewUrl("");
+    setWorkplacePhotoPath("");
+  };
+
+  const close = () => {
+    setOpen(false);
+    setError("");
+    setText("");
+    resetPhoto();
+  };
+
+  const handlePhotoSelected = async (file: File | undefined) => {
+    if (!file) return;
+    setError("");
+    setPhotoUploading(true);
+    if (photoPreviewUrl.startsWith("blob:")) URL.revokeObjectURL(photoPreviewUrl);
+    try {
+      const blob = await compressImageFile(file);
+      const preview = URL.createObjectURL(blob);
+      setPhotoPreviewUrl(preview);
+      const form = new FormData();
+      form.append("shiftId", shiftId);
+      form.append("file", new File([blob], "workplace.jpg", { type: "image/jpeg" }));
+      const res = await fetch("/api/reports/workplace-photo", { method: "POST", body: form });
+      const body = (await res.json().catch(() => ({}))) as { path?: string; error?: string };
+      if (!res.ok) {
+        URL.revokeObjectURL(preview);
+        setPhotoPreviewUrl("");
+        setWorkplacePhotoPath("");
+        const errKey = body.error ?? "upload_failed";
+        if (errKey === "file_too_large") {
+          setError("Фото слишком большое (макс. 3 МБ).");
+        } else if (errKey === "unauthorized") {
+          setError("Нужна авторизация. Обновите страницу и войдите снова.");
+        } else {
+          setError("Не удалось загрузить фото. Попробуйте ещё раз.");
+        }
+        return;
+      }
+      if (!body.path) {
+        URL.revokeObjectURL(preview);
+        setPhotoPreviewUrl("");
+        setError("Не удалось загрузить фото.");
+        return;
+      }
+      setWorkplacePhotoPath(body.path);
+    } catch (err) {
+      setPhotoPreviewUrl("");
+      setWorkplacePhotoPath("");
+      setError(err instanceof Error ? err.message : "Не удалось обработать фото.");
+    } finally {
+      setPhotoUploading(false);
+      if (cameraInputRef.current) cameraInputRef.current.value = "";
+      if (galleryInputRef.current) galleryInputRef.current.value = "";
+    }
+  };
+
+  const overlay =
+    open && mounted
+      ? createPortal(
+          <div
+            className="fixed inset-0 z-[220] flex items-center justify-center bg-background/80 p-4 backdrop-blur-[2px]"
+            role="presentation"
+            style={{ overscrollBehavior: "contain" }}
+            onClick={() => !pending && close()}
+          >
+            <div
+              className="max-h-[min(90dvh,640px)] w-full max-w-lg overflow-y-auto overflow-x-hidden rounded-lg border border-border bg-background"
+              role="dialog"
+              aria-modal
+              aria-labelledby="shift-report-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="border-b border-border/80 px-4 py-4">
+                <p id="shift-report-title" className="text-base font-medium tracking-tight">
+                  Отчёт по смене
+                </p>
+                <p className="mt-1 text-sm text-muted">{headline}</p>
+              </div>
+              <form
+                className="space-y-4 px-4 py-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setError("");
+                  if (text.trim().length < 5) {
+                    setError("Напишите чуть подробнее — минимум 5 символов.");
+                    return;
+                  }
+                  if (!workplacePhotoPath) {
+                    setError("Добавьте фото рабочего места перед отправкой.");
+                    return;
+                  }
+                  start(async () => {
+                    try {
+                      await submitShiftReport({ shiftId, text, workplacePhotoPath });
+                      setText("");
+                      close();
+                      router.refresh();
+                    } catch (err) {
+                      setError(formatShiftReportSubmitError(err));
+                    }
+                  });
+                }}
+              >
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-foreground" htmlFor={`shift-report-text-${shiftId}`}>
+                    Что вы сделали за смену
+                  </label>
+                  <textarea
+                    id={`shift-report-text-${shiftId}`}
+                    className="min-h-32 w-full resize-y rounded-lg border-0 bg-transparent px-0 py-2.5 text-sm leading-relaxed outline-none ring-0 focus-visible:outline-none"
+                    value={text}
+                    onChange={(e) => {
+                      setText(e.target.value);
+                      setError("");
+                    }}
+                    placeholder="Опишите выполненную работу"
+                    disabled={pending}
+                    autoFocus
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-foreground">Фото рабочего места</p>
+                  <input
+                    ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="sr-only"
+                    aria-hidden
+                    tabIndex={-1}
+                    disabled={pending || photoUploading}
+                    onChange={(e) => void handlePhotoSelected(e.target.files?.[0])}
+                  />
+                  <input
+                    ref={galleryInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    aria-hidden
+                    tabIndex={-1}
+                    disabled={pending || photoUploading}
+                    onChange={(e) => void handlePhotoSelected(e.target.files?.[0])}
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn-secondary inline-flex items-center gap-2"
+                      disabled={pending || photoUploading}
+                      onClick={() => cameraInputRef.current?.click()}
+                    >
+                      <Camera size={16} aria-hidden />
+                      {photoUploading ? "Загружаем…" : "Сфоткать"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary inline-flex items-center gap-2"
+                      disabled={pending || photoUploading}
+                      onClick={() => galleryInputRef.current?.click()}
+                    >
+                      <ImagePlus size={16} aria-hidden />
+                      Из галереи
+                    </button>
+                    {workplacePhotoPath ? (
+                      <span className="w-full text-xs text-muted sm:w-auto">Фото загружено</span>
+                    ) : null}
+                  </div>
+                  {photoPreviewUrl ? (
+                    <img
+                      src={photoPreviewUrl}
+                      alt="Превью рабочего места"
+                      className="max-h-48 w-full rounded-lg border border-border object-cover"
+                    />
+                  ) : null}
+                </div>
+
+                {error ? <p className="text-sm font-medium text-foreground/85">{error}</p> : null}
+
+                <div className="grid w-full grid-cols-2 gap-3 pt-1 [grid-template-columns:repeat(2,minmax(0,1fr))]">
+                  <button type="button" className="btn-secondary w-full" disabled={pending || photoUploading} onClick={close}>
+                    Отменить
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-primary w-full"
+                    disabled={pending || photoUploading || !workplacePhotoPath}
+                  >
+                    {pending ? "Отправляем…" : "Завершить"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )
+      : null;
+
+  return (
+    <>
+      <button
+        type="button"
+        className="absolute bottom-3 right-3 z-10 flex min-h-11 min-w-11 touch-manipulation items-center justify-center rounded-full border border-border bg-background text-foreground transition-colors hover:bg-foreground/[0.06]"
+        aria-label="Отметить смену выполненной"
+        onClick={() => setOpen(true)}
+      >
+        <ClipboardCheck size={18} className="shrink-0" aria-hidden />
+      </button>
+
+      {overlay}
+    </>
+  );
+}

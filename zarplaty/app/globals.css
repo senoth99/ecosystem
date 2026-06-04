@@ -1,0 +1,127 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #040507;
+  color: #f3f3f3;
+  font-family: Inter, Arial, Helvetica, sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.page {
+  min-height: 100vh;
+  background: linear-gradient(180deg, #131922 0%, #10161f 100%);
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 20px 40px;
+}
+
+.header {
+  height: 52px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #04070c;
+}
+
+.header-inner {
+  height: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  display: grid;
+  place-items: center;
+}
+
+.logo-spin {
+  width: 68px;
+  height: 40px;
+  animation: none;
+  filter: none;
+  object-fit: contain;
+  opacity: 0.95;
+}
+
+.progress-wrap {
+  height: 7px;
+  background: #101318;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #365f38 0%, #88c978 100%);
+}
+
+.block {
+  border: 1px solid #1f232c;
+  background: #090a0d;
+}
+
+.title {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.field,
+.btn,
+.select {
+  width: 100%;
+  height: 44px;
+  border: 1px solid #252a33;
+  background: #0b0d11;
+  color: #f5f7fa;
+  padding: 0 12px;
+  outline: none;
+}
+
+.btn {
+  cursor: pointer;
+  background: #18331a;
+  border-color: #2f5b33;
+  font-weight: 700;
+}
+
+.btn:hover {
+  background: #1f3f22;
+}
+
+.grid {
+  display: grid;
+  gap: 14px;
+}
+
+.employee-card {
+  padding: 16px;
+  border: 1px solid #20242c;
+  background: #090b0f;
+}
+
+.chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  border: 1px solid #2f3744;
+  background: #10141b;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 4px 8px;
+}

@@ -1,0 +1,18 @@
+{
+  "name": "casher-ecosystem",
+  "private": true,
+  "workspaces": [
+    "auth-service",
+    "portal",
+    "services/catalog",
+    "services/media",
+    "packages/ecosystem-session"
+  ],
+  "scripts": {
+    "dev:portal": "npm run dev -w portal",
+    "dev:auth": "npm run dev -w auth-service",
+    "build": "npm run build -w auth-service && npm run build -w portal",
+    "db:push": "npm run db:push -w auth-service",
+    "db:seed": "npm run db:seed -w auth-service"
+  }
+}

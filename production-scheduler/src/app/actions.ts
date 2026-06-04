@@ -1,0 +1,1327 @@
+"use server";
+
+import { Prisma } from "@prisma/client";
+import { addHours, isBefore, parseISO } from "date-fns";
+import { revalidatePath } from "next/cache";
+import { after } from "next/server";
+import {
+  hashToken,
+  generateRawToken,
+  getCurrentUser,
+  refreshSessionCookieForUserId,
+  requireAuth,
+  requireRole
+} from "@/lib/auth";
+import { BRIGADES } from "@/lib/brigades";
+import { prisma } from "@/lib/prisma";
+import { reportSchema, shiftSchema, updateReportSchema, updateShiftSchema, userSchema, zoneLimitSchema, zoneSchema } from "@/lib/validation";
+import { resolveAppPublicBaseUrl } from "@/lib/appUrl";
+import { writeAuditLog } from "@/lib/audit";
+import {
+  AppNotificationType,
+  ShiftReportStatus,
+  ShiftSource,
+  ShiftStatus,
+  UserRole
+} from "@/lib/enums";
+import { canOpenManagerPanel } from "@/lib/managerPanel";
+import { notifyUserAppAndTelegram } from "@/lib/notifyDispatch";
+import {
+  notifyAdminRoleUsers,
+  notifyAdminsEmployeeShiftChange,
+  notifyAdminsShiftReportSubmitted,
+  notifyScheduleAdmins
+} from "@/lib/notifyAdmins";
+import { describeShiftBrief } from "@/lib/shiftBrief";
+import { prismaUserListNameSelect, prismaUserShiftBoardSelect } from "@/lib/prismaSafeUserInclude";
+import { isoFromWeekDay } from "@/lib/utils";
+import {
+  getReportPhotoApiPath,
+  resolveReportPhotoDiskPath
+} from "@/lib/workplaceReportPhoto";
+import { z } from "zod";
+
+function normalizedTelegramSuperAdminUsername(): string {
+  return (process.env.TELEGRAM_ADMIN_USERNAME ?? "").trim().toLowerCase().replace(/^@/, "");
+}
+
+function scheduleAdminsEmployeeShiftNotify(input: {
+  type:
+    | typeof AppNotificationType.SHIFT_ADDED_BY_EMPLOYEE
+    | typeof AppNotificationType.SHIFT_REMOVED_BY_EMPLOYEE;
+  employeeName: string;
+  brief: string;
+  payload?: unknown;
+  excludeUserIds?: string[];
+}) {
+  after(async () => {
+    try {
+      await notifyAdminsEmployeeShiftChange(input);
+    } catch (e) {
+      console.error("[scheduleAdminsEmployeeShiftNotify]", input.type, e);
+    }
+  });
+}
+
+async function requireSuperAdminOrManagerForTelegramAccess() {
+  const actor = await requireAuth();
+  if (actor.role === UserRole.SUPER_ADMIN || canOpenManagerPanel(actor)) {
+    return { actor, isSuper: actor.role === UserRole.SUPER_ADMIN };
+  }
+  throw new Error("Недостаточно прав.");
+}
+
+const managerBrigadeAssignSchema = z.object({
+  brigadeId: z.string(),
+  dayOfWeek: z.number().int().min(1).max(7),
+  weekStartDate: z.string(),
+  userId: z.string()
+});
+
+const updateEmployeeNdaSignedSchema = z.object({
+  userId: z.string(),
+  ndaSigned: z.boolean()
+});
+
+const managerRecordPayoutSchema = z.object({
+  userId: z.string().cuid(),
+  amountRub: z.coerce.number().finite().positive("Сумма выплаты должна быть больше нуля")
+});
+
+const acceptShiftReportSchema = z
+  .object({
+    reportId: z.string().cuid(),
+    amountAppearanceRub: z.coerce.number().finite().min(0),
+    amountWorkRub: z.coerce.number().finite().min(0)
+  })
+  .refine((d) => d.amountAppearanceRub + d.amountWorkRub > 0, {
+    message: "Сумма начисления должна быть больше нуля (заполните одну или обе суммы).",
+    path: ["amountAppearanceRub"]
+  });
+
+function userIsReportAdmin(actor: { role: string; isManager?: boolean | null }) {
+  return actor.role === UserRole.ADMIN || actor.role === UserRole.SUPER_ADMIN || Boolean(actor.isManager);
+}
+
+function toDateTime(weekStartDate: Date, dayOfWeek: number, time: string) {
+  const date = isoFromWeekDay(weekStartDate, dayOfWeek);
+  const [hours, minutes] = time.split(":").map(Number);
+  date.setHours(hours, minutes, 0, 0);
+  return date;
+}
+
+function endAt(start: Date, startTime: string, endTime: string) {
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  const end = new Date(start);
+  end.setHours(eh, em, 0, 0);
+  if (eh < sh || (eh === sh && em <= sm)) end.setDate(end.getDate() + 1);
+  return end;
+}
+
+async function assertCanEditBy24h(userRole: string, shiftStart: Date) {
+  if (userRole !== UserRole.EMPLOYEE) return;
+  if (isBefore(shiftStart, addHours(new Date(), 24))) {
+    throw new Error("Смену нельзя изменить меньше чем за 24 часа до начала. Обратитесь к администратору.");
+  }
+}
+
+async function assertNoOverlap(userId: string, start: Date, end: Date, exceptShiftIds: string[] = []) {
+  const shifts = await prisma.shift.findMany({
+    where: {
+      userId,
+      status: { in: [ShiftStatus.PLANNED, ShiftStatus.IN_PROGRESS, ShiftStatus.COMPLETED] },
+      ...(exceptShiftIds.length ? { NOT: { id: { in: exceptShiftIds } } } : {})
+    }
+  });
+  for (const s of shifts) {
+    const sStart = toDateTime(s.weekStartDate, s.dayOfWeek, s.startTime);
+    const sEnd = endAt(sStart, s.startTime, s.endTime);
+    if (start < sEnd && end > sStart) throw new Error("Пересечение смен: сотрудник уже занят в это время.");
+  }
+}
+
+async function assertSingleShiftPerDay(
+  userId: string,
+  weekStartDate: Date,
+  dayOfWeek: number,
+  exceptShiftId?: string
+) {
+  const existing = await prisma.shift.findFirst({
+    where: {
+      userId,
+      weekStartDate,
+      dayOfWeek,
+      status: { not: ShiftStatus.CANCELLED },
+      ...(exceptShiftId ? { NOT: { id: exceptShiftId } } : {})
+    },
+    select: { id: true }
+  });
+  if (existing) {
+    throw new Error("На один день можно поставить только одну смену в одном направлении.");
+  }
+}
+
+async function assertZoneLimit(zoneId: string, dayOfWeek: number, startTime: string, endTime: string, weekStartDate: Date, allowOverride: boolean) {
+  const limits = await prisma.zoneLimit.findMany({ where: { zoneId, OR: [{ dayOfWeek }, { dayOfWeek: null }] } });
+  const max = limits.length ? Math.min(...limits.map((l) => l.maxEmployees)) : Number.MAX_SAFE_INTEGER;
+  const count = await prisma.shift.count({
+    where: { zoneId, dayOfWeek, weekStartDate, startTime, endTime, status: { not: ShiftStatus.CANCELLED } }
+  });
+  if (count >= max && !allowOverride) throw new Error("Лимит сотрудников по зоне и времени превышен.");
+}
+
+async function ensureBrigadeZones() {
+  const zoneByName = new Map<string, { id: string }>();
+  for (const [idx, brigade] of BRIGADES.entries()) {
+    const existing = await prisma.zone.findFirst({ where: { name: brigade.zoneName } });
+    if (existing) {
+      zoneByName.set(brigade.zoneName, { id: existing.id });
+      continue;
+    }
+    const created = await prisma.zone.create({
+      data: { name: brigade.zoneName, sortOrder: idx + 1, isActive: true }
+    });
+    zoneByName.set(brigade.zoneName, { id: created.id });
+  }
+  return zoneByName;
+}
+
+export async function createUser(input: unknown) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
+  const data = userSchema.parse(input);
+  if (data.role === UserRole.SUPER_ADMIN && actor.role !== UserRole.SUPER_ADMIN) {
+    throw new Error("Только суперадмин может создать пользователя с ролью SUPER_ADMIN.");
+  }
+  if (data.role === UserRole.SUPER_ADMIN) {
+    const existingSuperAdmin = await prisma.user.findFirst({ where: { role: UserRole.SUPER_ADMIN } });
+    if (existingSuperAdmin) throw new Error("Суперадмин может быть только один.");
+  }
+  const user = await prisma.user.create({ data });
+  await writeAuditLog({ actorUserId: actor.id, action: "CREATE_USER", entityType: "User", entityId: user.id, payload: data });
+  revalidatePath("/admin/users");
+}
+
+export async function updateUser(id: string, input: unknown) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
+  const target = await prisma.user.findUnique({ where: { id } });
+  if (!target) throw new Error("Пользователь не найден.");
+  const data = userSchema.partial().parse(input);
+  if (actor.role !== UserRole.SUPER_ADMIN) {
+    if (target.role === UserRole.SUPER_ADMIN) {
+      throw new Error("Изменять суперадмина может только суперадмин.");
+    }
+    if (data.role === UserRole.SUPER_ADMIN) {
+      throw new Error("Назначать роль SUPER_ADMIN может только суперадмин.");
+    }
+  }
+  if (data.role === UserRole.SUPER_ADMIN) {
+    const existingSuperAdmin = await prisma.user.findFirst({
+      where: { role: UserRole.SUPER_ADMIN, id: { not: id } }
+    });
+    if (existingSuperAdmin) throw new Error("Суперадмин может быть только один.");
+  }
+  const user = await prisma.user.update({ where: { id }, data });
+  await writeAuditLog({ actorUserId: actor.id, action: "UPDATE_USER", entityType: "User", entityId: id, payload: data });
+  revalidatePath("/admin/users");
+  return user;
+}
+
+export async function generateAccessToken(userId: string) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
+  const raw = generateRawToken();
+  const tokenHash = hashToken(raw);
+  await prisma.accessToken.create({ data: { userId, tokenHash } });
+  await writeAuditLog({ actorUserId: actor.id, action: "ISSUE_ACCESS_TOKEN", entityType: "AccessToken", entityId: userId });
+  return `${resolveAppPublicBaseUrl()}/login/token/${raw}`;
+}
+
+export async function revokeAccessToken(id: string) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
+  await prisma.accessToken.update({ where: { id }, data: { isActive: false, revokedAt: new Date() } });
+  await writeAuditLog({ actorUserId: actor.id, action: "REVOKE_ACCESS_TOKEN", entityType: "AccessToken", entityId: id });
+}
+
+export async function createZone(input: unknown) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
+  const data = zoneSchema.parse(input);
+  const zone = await prisma.zone.create({ data });
+  await writeAuditLog({ actorUserId: actor.id, action: "CREATE_ZONE", entityType: "Zone", entityId: zone.id, payload: data });
+  revalidatePath("/admin/zones");
+}
+
+export async function updateZone(id: string, input: unknown) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
+  const data = zoneSchema.partial().parse(input);
+  await prisma.zone.update({ where: { id }, data });
+  await writeAuditLog({ actorUserId: actor.id, action: "UPDATE_ZONE", entityType: "Zone", entityId: id, payload: data });
+  revalidatePath("/admin/zones");
+}
+
+export async function createZoneLimit(input: unknown) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
+  const data = zoneLimitSchema.parse(input);
+  await prisma.zoneLimit.create({ data });
+  await writeAuditLog({ actorUserId: actor.id, action: "CREATE_ZONE_LIMIT", entityType: "ZoneLimit", payload: data });
+  revalidatePath("/admin/limits");
+}
+
+export async function createShift(input: unknown, forceOverride = false) {
+  const actor = await requireAuth();
+  const parsed = shiftSchema.parse(input);
+  const isAdmin = actor.role === UserRole.ADMIN || actor.role === UserRole.SUPER_ADMIN;
+  if (actor.role === UserRole.EMPLOYEE && actor.id !== parsed.userId) throw new Error("Нельзя создавать смену другому сотруднику.");
+  const start = toDateTime(parsed.weekStartDate, parsed.dayOfWeek, parsed.startTime);
+  const end = endAt(start, parsed.startTime, parsed.endTime);
+  await assertCanEditBy24h(actor.role, start);
+  await assertSingleShiftPerDay(parsed.userId, parsed.weekStartDate, parsed.dayOfWeek);
+  await assertNoOverlap(parsed.userId, start, end);
+  await assertZoneLimit(parsed.zoneId, parsed.dayOfWeek, parsed.startTime, parsed.endTime, parsed.weekStartDate, isAdmin && forceOverride);
+  const shift = await prisma.shift.create({
+    data: { ...parsed, source: actor.role === UserRole.EMPLOYEE ? ShiftSource.SELF : ShiftSource.ADMIN, createdById: actor.id, updatedById: actor.id }
+  });
+  await writeAuditLog({ actorUserId: actor.id, action: "CREATE_SHIFT", entityType: "Shift", entityId: shift.id, payload: parsed });
+  if (actor.role === UserRole.EMPLOYEE) {
+    const withZone = await prisma.shift.findUnique({
+      where: { id: shift.id },
+      include: { zone: true }
+    });
+    if (withZone) {
+      scheduleAdminsEmployeeShiftNotify({
+        type: AppNotificationType.SHIFT_ADDED_BY_EMPLOYEE,
+        employeeName: actor.name,
+        brief: describeShiftBrief(withZone),
+        payload: { shiftId: shift.id, userId: actor.id },
+        excludeUserIds: [actor.id]
+      });
+    }
+  }
+  revalidatePath("/schedule");
+  revalidatePath("/me");
+}
+
+export async function toggleBrigadeAssignment(input: { brigadeId: string; dayOfWeek: number; weekStartDate: string }) {
+  const actor = await requireAuth();
+  const brigade = BRIGADES.find((b) => b.id === input.brigadeId);
+  if (!brigade) throw new Error("Бригада не найдена");
+  const dayOfWeek = Number(input.dayOfWeek);
+  if (dayOfWeek < 1 || dayOfWeek > 7) throw new Error("Некорректный день недели");
+  const weekStartDate = parseISO(input.weekStartDate);
+  const zones = await ensureBrigadeZones();
+  const zone = zones.get(brigade.zoneName);
+  if (!zone) throw new Error("Зона не найдена");
+
+  const existingSameCell = await prisma.shift.findFirst({
+    where: {
+      userId: actor.id,
+      zoneId: zone.id,
+      weekStartDate,
+      dayOfWeek,
+      startTime: brigade.startTime,
+      endTime: brigade.endTime,
+      status: { not: ShiftStatus.CANCELLED }
+    },
+    include: { zone: true }
+  });
+
+  if (existingSameCell) {
+    const removedBrief = describeShiftBrief(existingSameCell);
+    await prisma.shift.delete({ where: { id: existingSameCell.id } });
+    scheduleAdminsEmployeeShiftNotify({
+      type: AppNotificationType.SHIFT_REMOVED_BY_EMPLOYEE,
+      employeeName: actor.name,
+      brief: removedBrief,
+      payload: { shiftId: existingSameCell.id, userId: actor.id },
+      excludeUserIds: [actor.id]
+    });
+    revalidatePath("/schedule");
+    revalidatePath("/me");
+    return;
+  }
+
+  const shiftsReplaced = await prisma.shift.findMany({
+    where: {
+      userId: actor.id,
+      weekStartDate,
+      dayOfWeek,
+      status: { in: [ShiftStatus.PLANNED, ShiftStatus.IN_PROGRESS] }
+    },
+    include: { zone: true }
+  });
+
+  await prisma.shift.deleteMany({
+    where: {
+      userId: actor.id,
+      weekStartDate,
+      dayOfWeek,
+      status: { in: [ShiftStatus.PLANNED, ShiftStatus.IN_PROGRESS] }
+    }
+  });
+
+  for (const replaced of shiftsReplaced) {
+    scheduleAdminsEmployeeShiftNotify({
+      type: AppNotificationType.SHIFT_REMOVED_BY_EMPLOYEE,
+      employeeName: actor.name,
+      brief: describeShiftBrief(replaced),
+      payload: { shiftId: replaced.id, userId: actor.id, replacedByBrigadeSwitch: true },
+      excludeUserIds: [actor.id]
+    });
+  }
+
+  const shift = await prisma.shift.create({
+    data: {
+      userId: actor.id,
+      zoneId: zone.id,
+      weekStartDate,
+      dayOfWeek,
+      startTime: brigade.startTime,
+      endTime: brigade.endTime,
+      source: ShiftSource.SELF,
+      createdById: actor.id,
+      updatedById: actor.id
+    }
+  });
+  if (actor.role === UserRole.EMPLOYEE) {
+    scheduleAdminsEmployeeShiftNotify({
+      type: AppNotificationType.SHIFT_ADDED_BY_EMPLOYEE,
+      employeeName: actor.name,
+      brief: describeShiftBrief({
+        zone: { name: brigade.zoneName },
+        dayOfWeek,
+        weekStartDate,
+        startTime: brigade.startTime,
+        endTime: brigade.endTime
+      }),
+      payload: { shiftId: shift.id, userId: actor.id },
+      excludeUserIds: [actor.id]
+    });
+  }
+  revalidatePath("/schedule");
+  revalidatePath("/me");
+}
+
+/** Назначение смены сотруднику с графика: суперадмин или руководитель (флаг isManager). */
+export async function managerAssignBrigadeShift(input: unknown) {
+  const actor = await requireAuth();
+  if (!canOpenManagerPanel(actor)) throw new Error("Недостаточно прав.");
+  const data = managerBrigadeAssignSchema.parse(input);
+  const brigade = BRIGADES.find((b) => b.id === data.brigadeId);
+  if (!brigade) throw new Error("Бригада не найдена");
+  const weekStartDate = parseISO(data.weekStartDate);
+  const zones = await ensureBrigadeZones();
+  const zone = zones.get(brigade.zoneName);
+  if (!zone) throw new Error("Зона не найдена");
+
+  const target = await prisma.user.findUnique({ where: { id: data.userId } });
+  if (!target?.isActive) throw new Error("Пользователь не найден или не активен.");
+
+  const existingSameCell = await prisma.shift.findFirst({
+    where: {
+      userId: data.userId,
+      zoneId: zone.id,
+      weekStartDate,
+      dayOfWeek: data.dayOfWeek,
+      startTime: brigade.startTime,
+      endTime: brigade.endTime,
+      status: { not: ShiftStatus.CANCELLED }
+    }
+  });
+  if (existingSameCell) return;
+
+  const shiftsReplaced = await prisma.shift.findMany({
+    where: {
+      userId: data.userId,
+      weekStartDate,
+      dayOfWeek: data.dayOfWeek,
+      status: { in: [ShiftStatus.PLANNED, ShiftStatus.IN_PROGRESS] }
+    },
+    include: { zone: true }
+  });
+
+  await prisma.shift.deleteMany({
+    where: {
+      userId: data.userId,
+      weekStartDate,
+      dayOfWeek: data.dayOfWeek,
+      status: { in: [ShiftStatus.PLANNED, ShiftStatus.IN_PROGRESS] }
+    }
+  });
+
+  const start = toDateTime(weekStartDate, data.dayOfWeek, brigade.startTime);
+  const end = endAt(start, brigade.startTime, brigade.endTime);
+  await assertNoOverlap(data.userId, start, end);
+  await assertZoneLimit(zone.id, data.dayOfWeek, brigade.startTime, brigade.endTime, weekStartDate, true);
+
+  const shift = await prisma.shift.create({
+    data: {
+      userId: data.userId,
+      zoneId: zone.id,
+      weekStartDate,
+      dayOfWeek: data.dayOfWeek,
+      startTime: brigade.startTime,
+      endTime: brigade.endTime,
+      source: ShiftSource.ADMIN,
+      createdById: actor.id,
+      updatedById: actor.id
+    }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "MANAGER_ASSIGN_BRIGADE",
+    entityType: "Shift",
+    entityId: shift.id,
+    payload: { ...data }
+  });
+
+  const brief = describeShiftBrief({
+    zone: { name: brigade.zoneName },
+    dayOfWeek: data.dayOfWeek,
+    weekStartDate,
+    startTime: brigade.startTime,
+    endTime: brigade.endTime
+  });
+  const selfAssigned = target.id === actor.id;
+  after(async () => {
+    try {
+      for (const replaced of shiftsReplaced) {
+        const removedBrief = describeShiftBrief(replaced);
+        await notifyAdminRoleUsers({
+          type: AppNotificationType.SHIFT_REMOVED_BY_EMPLOYEE,
+          title: "Смена снята с графика",
+          body: `${actor.name} снял смену с ${target.name}: ${removedBrief}.`,
+          telegramText: `📅 ${actor.name} снял смену — ${target.name}:\n${removedBrief}`,
+          payload: { shiftId: replaced.id, userId: target.id, replacedByManagerAssign: true },
+          excludeUserIds: [target.id]
+        });
+      }
+
+      await notifyUserAppAndTelegram({
+        userId: target.id,
+        type: AppNotificationType.SHIFT_ASSIGNED_BY_MANAGER,
+        title: selfAssigned ? "Вы назначили себе смену" : "Вам назначили смену",
+        body: selfAssigned
+          ? `Вы записали себя в график: ${brief}.`
+          : `${actor.name} записал вас в график: ${brief}.`,
+        payload: { shiftId: shift.id, selfAssigned },
+        telegramText: selfAssigned
+          ? `📅 Вы назначили себе смену:\n${brief}`
+          : `📅 Вам назначили смену (${actor.name}):\n${brief}`
+      });
+
+      await notifyScheduleAdmins({
+        type: AppNotificationType.SHIFT_ADDED_BY_EMPLOYEE,
+        title: selfAssigned ? "Запись в график" : "Назначили смену",
+        body: selfAssigned
+          ? `${target.name} записался в график: ${brief}.`
+          : `${actor.name} назначил ${target.name}: ${brief}.`,
+        telegramText: selfAssigned
+          ? `📅 ${target.name} записался на смену:\n${brief}`
+          : `📅 ${actor.name} назначил смену — ${target.name}:\n${brief}`,
+        payload: { shiftId: shift.id, userId: target.id, byManagerId: actor.id, selfAssigned },
+        excludeUserIds: [target.id]
+      });
+    } catch (e) {
+      console.error("[managerAssignBrigadeShift] уведомление не отправлено, смена уже создана:", e);
+    }
+  });
+
+  revalidatePath("/schedule");
+  revalidatePath("/me");
+  revalidatePath("/");
+}
+
+export async function managerRemoveShift(shiftId: string) {
+  const actor = await requireAuth();
+  if (!canOpenManagerPanel(actor)) throw new Error("Недостаточно прав.");
+  const shift = await prisma.shift.findUnique({
+    where: { id: shiftId },
+    include: { zone: true, user: { select: { id: true, name: true } } }
+  });
+  if (!shift) throw new Error("Смена не найдена.");
+  if (shift.status === ShiftStatus.CANCELLED) return;
+
+  const brief = describeShiftBrief(shift);
+  const targetName = shift.user.name;
+  const targetUserId = shift.userId;
+
+  await prisma.shift.delete({ where: { id: shiftId } });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "MANAGER_REMOVE_SHIFT",
+    entityType: "Shift",
+    entityId: shiftId,
+    payload: { userId: shift.userId }
+  });
+
+  after(async () => {
+    try {
+      if (targetUserId !== actor.id) {
+        await notifyUserAppAndTelegram({
+          userId: targetUserId,
+          type: AppNotificationType.SHIFT_REMOVED_BY_MANAGER,
+          title: "С вас сняли смену",
+          body: `${actor.name} удалил вашу запись из графика: ${brief}.`,
+          payload: { shiftId }
+        });
+      }
+      await notifyAdminRoleUsers({
+        type: AppNotificationType.SHIFT_REMOVED_BY_EMPLOYEE,
+        title: "Смена снята с графика",
+        body:
+          targetUserId === actor.id
+            ? `${actor.name} снял свою смену: ${brief}.`
+            : `${actor.name} снял смену с ${targetName}: ${brief}.`,
+        telegramText:
+          targetUserId === actor.id
+            ? `📅 ${actor.name} снял смену:\n${brief}`
+            : `📅 ${actor.name} снял смену — ${targetName}:\n${brief}`,
+        payload: { shiftId, userId: targetUserId, byManagerId: actor.id },
+        excludeUserIds: targetUserId !== actor.id ? [targetUserId] : [actor.id]
+      });
+    } catch (e) {
+      console.error("[managerRemoveShift] уведомление не отправлено, запись уже удалена:", e);
+    }
+  });
+
+  revalidatePath("/schedule");
+  revalidatePath("/me");
+  revalidatePath("/");
+}
+
+export async function updateEmployeeNdaSigned(input: unknown) {
+  const actor = await requireAuth();
+  if (!canOpenManagerPanel(actor)) throw new Error("Недостаточно прав.");
+  const data = updateEmployeeNdaSignedSchema.parse(input);
+
+  const target = await prisma.user.findUnique({
+    where: { id: data.userId },
+    select: { id: true, role: true }
+  });
+  if (!target || target.role !== UserRole.EMPLOYEE) throw new Error("Сотрудник не найден.");
+
+  await prisma.user.update({
+    where: { id: data.userId },
+    data: { ndaSigned: data.ndaSigned }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "MANAGER_UPDATE_EMPLOYEE_NDA",
+    entityType: "User",
+    entityId: data.userId,
+    payload: { ndaSigned: data.ndaSigned }
+  });
+  revalidatePath("/manager/employees");
+  revalidatePath(`/manager/employees/${data.userId}`);
+}
+
+export async function managerRecordPayout(input: unknown) {
+  const actor = await requireAuth();
+  if (!canOpenManagerPanel(actor)) throw new Error("Недостаточно прав.");
+
+  const data = managerRecordPayoutSchema.parse(input);
+  const amountCents = Math.round(data.amountRub * 100);
+  if (amountCents <= 0) throw new Error("Некорректная сумма выплаты.");
+
+  let updated: { prevDebtCents: number; nextDebtCents: number };
+  try {
+    updated = await prisma.$transaction(async (tx) => {
+      const target = await tx.user.findUnique({
+        where: { id: data.userId },
+        select: { id: true, role: true, payoutDebtCents: true }
+      });
+      if (!target || target.role !== UserRole.EMPLOYEE) throw new Error("Сотрудник не найден.");
+
+      const nextDebtCents = Math.max(0, target.payoutDebtCents - amountCents);
+      await tx.user.update({
+        where: { id: data.userId },
+        data: { payoutDebtCents: nextDebtCents }
+      });
+      return { prevDebtCents: target.payoutDebtCents, nextDebtCents };
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2022") {
+      throw new Error("Схема базы без поля выплат. Выполните на сервере: npx prisma db push и перезапустите приложение.");
+    }
+    throw e instanceof Error ? e : new Error("Не удалось записать выплату.");
+  }
+
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "MANAGER_RECORD_PAYOUT",
+    entityType: "User",
+    entityId: data.userId,
+    payload: {
+      amountRub: data.amountRub,
+      prevDebtCents: updated.prevDebtCents,
+      nextDebtCents: updated.nextDebtCents
+    }
+  });
+
+  revalidatePath("/manager");
+  revalidatePath("/manager/payouts");
+  revalidatePath("/manager/employees");
+  revalidatePath("/me");
+  revalidatePath("/me/balance");
+}
+
+export async function managerRecordAccrual(input: unknown) {
+  const actor = await requireAuth();
+  if (!canOpenManagerPanel(actor)) throw new Error("Недостаточно прав.");
+
+  const data = managerRecordPayoutSchema.parse(input);
+  const amountCents = Math.round(data.amountRub * 100);
+  if (amountCents <= 0) throw new Error("Некорректная сумма начисления.");
+
+  let updated: { prevDebtCents: number; nextDebtCents: number };
+  try {
+    updated = await prisma.$transaction(async (tx) => {
+      const target = await tx.user.findUnique({
+        where: { id: data.userId },
+        select: { id: true, role: true, payoutDebtCents: true }
+      });
+      if (!target || target.role !== UserRole.EMPLOYEE) throw new Error("Сотрудник не найден.");
+
+      const nextDebtCents = target.payoutDebtCents + amountCents;
+      await tx.user.update({
+        where: { id: data.userId },
+        data: { payoutDebtCents: nextDebtCents }
+      });
+      return { prevDebtCents: target.payoutDebtCents, nextDebtCents };
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2022") {
+      throw new Error("Схема базы без поля выплат. Выполните на сервере: npx prisma db push и перезапустите приложение.");
+    }
+    throw e instanceof Error ? e : new Error("Не удалось записать начисление.");
+  }
+
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "MANAGER_RECORD_ACCRUAL",
+    entityType: "User",
+    entityId: data.userId,
+    payload: {
+      amountRub: data.amountRub,
+      prevDebtCents: updated.prevDebtCents,
+      nextDebtCents: updated.nextDebtCents
+    }
+  });
+
+  revalidatePath("/manager");
+  revalidatePath("/manager/payouts");
+  revalidatePath("/manager/employees");
+  revalidatePath("/me");
+  revalidatePath("/me/balance");
+}
+
+export async function updateShift(input: unknown, forceOverride = false) {
+  const actor = await requireAuth();
+  const parsed = updateShiftSchema.parse(input);
+  const current = await prisma.shift.findUniqueOrThrow({ where: { id: parsed.id } });
+  if (actor.role === UserRole.EMPLOYEE && current.userId !== actor.id) throw new Error("Можно менять только свои смены.");
+  const weekStartDate = parsed.weekStartDate ?? current.weekStartDate;
+  const dayOfWeek = parsed.dayOfWeek ?? current.dayOfWeek;
+  const startTime = parsed.startTime ?? current.startTime;
+  const endTime = parsed.endTime ?? current.endTime;
+  const zoneId = parsed.zoneId ?? current.zoneId;
+  const start = toDateTime(weekStartDate, dayOfWeek, startTime);
+  const end = endAt(start, startTime, endTime);
+  await assertCanEditBy24h(actor.role, start);
+  await assertSingleShiftPerDay(current.userId, weekStartDate, dayOfWeek, current.id);
+  await assertNoOverlap(current.userId, start, end, [current.id]);
+  const isAdmin = actor.role === UserRole.ADMIN || actor.role === UserRole.SUPER_ADMIN;
+  await assertZoneLimit(zoneId, dayOfWeek, startTime, endTime, weekStartDate, isAdmin && forceOverride);
+  await prisma.shift.update({ where: { id: current.id }, data: { ...parsed, updatedById: actor.id } });
+  await writeAuditLog({ actorUserId: actor.id, action: "UPDATE_SHIFT", entityType: "Shift", entityId: current.id, payload: parsed });
+  if (actor.role === UserRole.EMPLOYEE) {
+    const withZone = await prisma.shift.findUnique({
+      where: { id: current.id },
+      include: { zone: true }
+    });
+    if (withZone) {
+      scheduleAdminsEmployeeShiftNotify({
+        type: AppNotificationType.SHIFT_ADDED_BY_EMPLOYEE,
+        employeeName: actor.name,
+        brief: describeShiftBrief(withZone),
+        payload: { shiftId: current.id, userId: actor.id, updated: true },
+        excludeUserIds: [actor.id]
+      });
+    }
+  }
+  revalidatePath("/schedule");
+  revalidatePath("/me");
+}
+
+export async function cancelShift(id: string) {
+  const actor = await requireAuth();
+  const shift = await prisma.shift.findUniqueOrThrow({ where: { id } });
+  if (actor.role === UserRole.EMPLOYEE && shift.userId !== actor.id) throw new Error("Можно отменять только свои смены.");
+  const start = toDateTime(shift.weekStartDate, shift.dayOfWeek, shift.startTime);
+  await assertCanEditBy24h(actor.role, start);
+  await prisma.shift.update({ where: { id }, data: { status: ShiftStatus.CANCELLED, updatedById: actor.id } });
+  await writeAuditLog({ actorUserId: actor.id, action: "CANCEL_SHIFT", entityType: "Shift", entityId: id });
+  if (actor.role === UserRole.EMPLOYEE) {
+    const withZone = await prisma.shift.findUnique({
+      where: { id },
+      include: { zone: true }
+    });
+    if (withZone) {
+      scheduleAdminsEmployeeShiftNotify({
+        type: AppNotificationType.SHIFT_REMOVED_BY_EMPLOYEE,
+        employeeName: actor.name,
+        brief: describeShiftBrief(withZone),
+        payload: { shiftId: id, userId: actor.id, cancelled: true },
+        excludeUserIds: [actor.id]
+      });
+    }
+  }
+  revalidatePath("/schedule");
+}
+
+export async function startShift(shiftId: string) {
+  const user = await requireAuth();
+  const shift = await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } });
+  if (shift.userId !== user.id) throw new Error("Можно начать только свою смену.");
+  const active = await prisma.shift.count({ where: { userId: user.id, status: ShiftStatus.IN_PROGRESS } });
+  if (active > 0) throw new Error("У вас уже есть активная смена.");
+  await prisma.shift.update({ where: { id: shiftId }, data: { status: ShiftStatus.IN_PROGRESS } });
+  await prisma.shiftTimeLog.upsert({
+    where: { shiftId },
+    create: { shiftId, userId: user.id, startedAt: new Date() },
+    update: { startedAt: new Date() }
+  });
+  await writeAuditLog({ actorUserId: user.id, action: "START_SHIFT", entityType: "Shift", entityId: shiftId });
+  revalidatePath("/me");
+  revalidatePath("/schedule");
+}
+
+export async function endShift(shiftId: string) {
+  const user = await requireAuth();
+  const shift = await prisma.shift.findUniqueOrThrow({ where: { id: shiftId } });
+  if (shift.userId !== user.id) throw new Error("Можно завершить только свою смену.");
+  if (shift.status !== ShiftStatus.IN_PROGRESS) throw new Error("Смена не запущена.");
+  await prisma.shift.update({ where: { id: shiftId }, data: { status: ShiftStatus.COMPLETED } });
+  await prisma.shiftTimeLog.upsert({
+    where: { shiftId },
+    create: { shiftId, userId: user.id, endedAt: new Date() },
+    update: { endedAt: new Date() }
+  });
+  await writeAuditLog({ actorUserId: user.id, action: "END_SHIFT", entityType: "Shift", entityId: shiftId });
+  revalidatePath("/me");
+}
+
+export async function submitShiftReport(input: unknown) {
+  const user = await requireAuth();
+  const data = reportSchema.parse(input);
+  const shift = await prisma.shift.findUniqueOrThrow({
+    where: { id: data.shiftId },
+    include: { report: true }
+  });
+  if (shift.userId !== user.id) throw new Error("Можно отправлять отчет только по своей смене.");
+  if (shift.status === ShiftStatus.CANCELLED) throw new Error("Смена отменена, отчёт недоступен.");
+  if (shift.report?.status === ShiftReportStatus.ACCEPTED) throw new Error("Отчёт уже принят.");
+
+  const expectedPhotoPath = getReportPhotoApiPath(data.shiftId);
+  const legacyPhotoPath = `/uploads/reports/${data.shiftId}.jpg`;
+  if (data.workplacePhotoPath !== expectedPhotoPath && data.workplacePhotoPath !== legacyPhotoPath) {
+    throw new Error("Некорректный путь к фото рабочего места.");
+  }
+  if (!resolveReportPhotoDiskPath(data.shiftId)) {
+    throw new Error("Фото рабочего места не найдено. Сделайте снимок и загрузите снова.");
+  }
+
+  const { reportIdForPath } = await prisma.$transaction(async (tx) => {
+    // Только поля, которые есть у любого Prisma Client: без status/updatedAt — иначе «Unknown argument»
+    // на старых клиентах; updatedAt подставляет БД (@default + @updatedAt в schema).
+    const rep = await tx.shiftReport.upsert({
+      where: { shiftId: data.shiftId },
+      create: {
+        shiftId: data.shiftId,
+        userId: user.id,
+        text: data.text.trim(),
+        workplacePhotoPath: expectedPhotoPath
+      },
+      update: {
+        text: data.text.trim(),
+        workplacePhotoPath: expectedPhotoPath
+      }
+    });
+
+    await tx.shift.update({
+      where: { id: data.shiftId },
+      data: { status: ShiftStatus.COMPLETED, updatedById: user.id }
+    });
+    await tx.shiftTimeLog.upsert({
+      where: { shiftId: data.shiftId },
+      create: { shiftId: data.shiftId, userId: user.id, endedAt: new Date() },
+      update: { endedAt: new Date() }
+    });
+    return { reportIdForPath: rep.id };
+  });
+
+  await writeAuditLog({
+    actorUserId: user.id,
+    action: "SUBMIT_SHIFT_REPORT",
+    entityType: "ShiftReport",
+    entityId: shift.id,
+    payload: { reportId: reportIdForPath }
+  });
+
+  const reportId = reportIdForPath;
+  const shiftId = data.shiftId;
+  const employeeName = user.name;
+  const reportText = data.text.trim();
+  after(async () => {
+    try {
+      const row = await prisma.shiftReport.findUnique({
+        where: { id: reportId },
+        include: { shift: { include: { zone: true } } }
+      });
+      if (!row) return;
+      await notifyAdminsShiftReportSubmitted({
+        reportId,
+        shiftId,
+        employeeName,
+        brief: describeShiftBrief(row.shift),
+        text: reportText
+      });
+    } catch (e) {
+      console.error("[submitShiftReport] уведомление админам не отправлено:", e);
+    }
+  });
+
+  revalidatePath("/reports");
+  revalidatePath(`/reports/${reportIdForPath}`);
+  revalidatePath("/me");
+  revalidatePath("/schedule");
+}
+
+export async function updateMyShiftReport(input: unknown) {
+  const user = await requireAuth();
+  const data = updateReportSchema.parse(input);
+  const report = await prisma.shiftReport.findUnique({
+    where: { id: data.reportId },
+    select: { id: true, userId: true, status: true }
+  });
+  if (!report) throw new Error("Отчёт не найден.");
+  if (report.userId !== user.id) throw new Error("Можно редактировать только свой отчёт.");
+  if (report.status !== ShiftReportStatus.PENDING_REVIEW) {
+    throw new Error("Редактирование доступно только до проверки отчёта.");
+  }
+
+  await prisma.shiftReport.update({
+    where: { id: report.id },
+    data: { text: data.text.trim() }
+  });
+  await writeAuditLog({
+    actorUserId: user.id,
+    action: "UPDATE_SHIFT_REPORT",
+    entityType: "ShiftReport",
+    entityId: report.id
+  });
+  revalidatePath("/reports");
+  revalidatePath(`/reports/${report.id}`);
+}
+
+export async function acceptShiftReportWithAccrual(input: unknown) {
+  const actor = await requireAuth();
+  if (!userIsReportAdmin(actor)) throw new Error("Только администратор может принять отчёт.");
+
+  const data = acceptShiftReportSchema.parse(input);
+  const appearanceCents = Math.round(data.amountAppearanceRub * 100);
+  const workCents = Math.round(data.amountWorkRub * 100);
+  const amountCents = appearanceCents + workCents;
+  if (amountCents <= 0) throw new Error("Некорректная сумма.");
+
+  const ledger = await prisma.$transaction(async (tx) => {
+    const report = await tx.shiftReport.findUnique({
+      where: { id: data.reportId },
+      include: { shift: { select: { id: true } } }
+    });
+    if (!report) throw new Error("Отчёт не найден.");
+    if (report.status !== ShiftReportStatus.PENDING_REVIEW) throw new Error("Отчёт уже обработан.");
+
+    const target = await tx.user.findUnique({
+      where: { id: report.userId },
+      select: { id: true, payoutDebtCents: true, isActive: true }
+    });
+    if (!target || !target.isActive) {
+      throw new Error("Пользователь не найден или отключён — начисление по отчёту невозможно.");
+    }
+
+    const nextDebtCents = target.payoutDebtCents + amountCents;
+
+    await tx.user.update({
+      where: { id: report.userId },
+      data: { payoutDebtCents: nextDebtCents }
+    });
+    await tx.shiftReport.update({
+      where: { id: report.id },
+      data: {
+        status: ShiftReportStatus.ACCEPTED,
+        accrualAmountCents: amountCents,
+        accrualAppearanceCents: appearanceCents,
+        accrualWorkCents: workCents,
+        acceptedAt: new Date(),
+        acceptedByUserId: actor.id
+      }
+    });
+
+    return {
+      userId: report.userId,
+      reportId: report.id,
+      shiftId: report.shift.id,
+      prevDebtCents: target.payoutDebtCents,
+      nextDebtCents
+    };
+  });
+
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "MANAGER_RECORD_ACCRUAL",
+    entityType: "User",
+    entityId: ledger.userId,
+    payload: {
+      amountRub: amountCents / 100,
+      amountAppearanceRub: data.amountAppearanceRub,
+      amountWorkRub: data.amountWorkRub,
+      prevDebtCents: ledger.prevDebtCents,
+      nextDebtCents: ledger.nextDebtCents,
+      shiftReportId: ledger.reportId,
+      shiftId: ledger.shiftId
+    }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "ACCEPT_SHIFT_REPORT",
+    entityType: "ShiftReport",
+    entityId: ledger.reportId,
+    payload: {
+      amountRub: amountCents / 100,
+      amountAppearanceRub: data.amountAppearanceRub,
+      amountWorkRub: data.amountWorkRub,
+      userId: ledger.userId
+    }
+  });
+
+  revalidatePath("/reports");
+  revalidatePath(`/reports/${data.reportId}`);
+  revalidatePath("/me");
+  revalidatePath("/me/balance");
+  revalidatePath("/schedule");
+  revalidatePath("/manager");
+  revalidatePath("/manager/payouts");
+  revalidatePath("/manager/employees");
+}
+
+export async function getWeekSchedule(weekStartDateIso?: string) {
+  await requireAuth();
+  const weekStartDate = weekStartDateIso ? parseISO(weekStartDateIso) : new Date();
+  return prisma.shift.findMany({
+    where: { weekStartDate },
+    include: { user: { select: prismaUserShiftBoardSelect }, zone: true, report: true },
+    orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }]
+  });
+}
+
+const MAX_REPORTS_IN_LIST = 50;
+
+export async function getReports() {
+  const user = await requireAuth();
+  const isAdmin = userIsReportAdmin(user);
+  return prisma.shiftReport.findMany({
+    where: isAdmin ? undefined : { userId: user.id },
+    include: {
+      user: { select: prismaUserListNameSelect },
+      shift: { include: { zone: true } },
+      acceptedBy: { select: prismaUserListNameSelect }
+    },
+    orderBy: { createdAt: "desc" },
+    take: MAX_REPORTS_IN_LIST
+  });
+}
+
+export async function getReportById(reportId: string) {
+  const user = await requireAuth();
+  const report = await prisma.shiftReport.findUnique({
+    where: { id: reportId },
+    include: {
+      user: { select: prismaUserListNameSelect },
+      shift: { include: { zone: true } },
+      acceptedBy: { select: prismaUserListNameSelect }
+    }
+  });
+  if (!report) return null;
+  const isAdmin = userIsReportAdmin(user);
+  if (!isAdmin && report.userId !== user.id) return null;
+  return report;
+}
+
+export async function updateMyProfile(input: unknown) {
+  const user = await requireAuth();
+  const schema = z.object({
+    firstName: z.string().trim().min(2, "Имя минимум 2 символа"),
+    lastName: z.string().trim().min(2, "Фамилия минимум 2 символа")
+  });
+  const data = schema.parse(input);
+  const displayName = `${data.lastName} ${data.firstName}`.trim();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      firstName: data.firstName,
+      lastName: data.lastName,
+      name: displayName,
+      profileCompleted: true
+    }
+  });
+  await refreshSessionCookieForUserId(user.id);
+  revalidatePath("/me");
+}
+
+export async function completeWelcomeProfile(input: unknown) {
+  const user = await getCurrentUser();
+  if (!user) throw new Error("Нужна авторизация");
+  const schema = z.object({
+    firstName: z.string().trim().min(2, "Имя минимум 2 символа"),
+    lastName: z.string().trim().min(2, "Фамилия минимум 2 символа")
+  });
+  const data = schema.parse(input);
+  const displayName = `${data.lastName} ${data.firstName}`.trim();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      firstName: data.firstName,
+      lastName: data.lastName,
+      name: displayName,
+      profileCompleted: true
+    }
+  });
+  await refreshSessionCookieForUserId(user.id);
+  revalidatePath("/welcome");
+  revalidatePath("/schedule");
+  revalidatePath("/me");
+}
+
+export async function addAllowedTelegramUser(input: unknown) {
+  const { actor, isSuper } = await requireSuperAdminOrManagerForTelegramAccess();
+  const schema = z.object({
+    username: z
+      .string()
+      .trim()
+      .min(3, "username слишком короткий")
+      .toLowerCase()
+      .transform((v) => v.replace(/^@/, "")),
+    isManager: z.boolean().optional().default(false)
+  });
+  const data = schema.parse(input);
+  const superAdminUsername = normalizedTelegramSuperAdminUsername();
+  if (!isSuper && superAdminUsername && data.username === superAdminUsername) {
+    throw new Error("Этот логин недоступен для добавления из панели сотрудников.");
+  }
+  const role =
+    isSuper && superAdminUsername && data.username === superAdminUsername ? UserRole.SUPER_ADMIN : UserRole.EMPLOYEE;
+  const managerFlag = role === UserRole.SUPER_ADMIN ? false : Boolean(data.isManager);
+  if (role === UserRole.SUPER_ADMIN) {
+    const existingSuperAdmin = await prisma.allowedTelegramUser.findFirst({
+      where: { role: UserRole.SUPER_ADMIN, username: { not: data.username } }
+    });
+    if (existingSuperAdmin) throw new Error("Суперадмин может быть только один.");
+  }
+  const usersForMatch = await prisma.user.findMany({
+    where: { telegramUsername: { not: null } },
+    select: { id: true, telegramId: true, telegramUsername: true }
+  });
+  const matchUser = usersForMatch.find((u) => (u.telegramUsername ?? "").toLowerCase() === data.username);
+
+  const row = await prisma.allowedTelegramUser.upsert({
+    where: { username: data.username },
+    update: {
+      role,
+      isActive: true,
+      isManager: managerFlag,
+      ...(matchUser?.telegramId ? { telegramId: matchUser.telegramId } : {})
+    },
+    create: {
+      username: data.username,
+      role,
+      isActive: true,
+      isManager: managerFlag,
+      telegramId: matchUser?.telegramId ?? null
+    }
+  });
+  await prisma.user.updateMany({
+    where: { telegramUsername: data.username, role: { not: UserRole.SUPER_ADMIN } },
+    data: { isActive: true }
+  });
+  const userIdsToFlag = usersForMatch
+    .filter((u) => (u.telegramUsername ?? "").toLowerCase() === data.username)
+    .map((u) => u.id);
+  if (userIdsToFlag.length > 0) {
+    await prisma.user.updateMany({
+      where: { id: { in: userIdsToFlag } },
+      data: { isManager: managerFlag }
+    });
+  }
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "ALLOW_TELEGRAM_USER",
+    entityType: "AllowedTelegramUser",
+    entityId: row.id,
+    payload: { ...data, role, isManager: managerFlag }
+  });
+  revalidatePath("/manager/employees");
+  revalidatePath("/manager");
+}
+
+export async function adminSetTelegramUserManager(input: unknown) {
+  const { actor, isSuper } = await requireSuperAdminOrManagerForTelegramAccess();
+  const schema = z.object({
+    username: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .transform((v) => v.replace(/^@/, "")),
+    isManager: z.boolean()
+  });
+  const data = schema.parse(input);
+  const superAdminUsername = normalizedTelegramSuperAdminUsername();
+  if (data.username === superAdminUsername) throw new Error("Флаг не нужен для суперадмина.");
+  const allow = await prisma.allowedTelegramUser.findFirst({
+    where: { username: data.username }
+  });
+  if (!allow) throw new Error("Запись доступа для этого username не найдена — добавьте пользователя снова.");
+  if (!isSuper && allow.role !== UserRole.EMPLOYEE) {
+    throw new Error("Недостаточно прав.");
+  }
+  await prisma.allowedTelegramUser.updateMany({
+    where: { username: data.username },
+    data: { isManager: data.isManager }
+  });
+  await prisma.user.updateMany({
+    where: { telegramUsername: data.username },
+    data: { isManager: data.isManager }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: data.isManager ? "SET_MANAGER" : "UNSET_MANAGER",
+    entityType: "AllowedTelegramUser",
+    entityId: data.username,
+    payload: data
+  });
+  revalidatePath("/manager/employees");
+  revalidatePath("/manager");
+}
+
+export async function toggleAllowedTelegramUser(id: string, active: boolean) {
+  const actor = await requireRole([UserRole.SUPER_ADMIN]);
+  await prisma.allowedTelegramUser.update({
+    where: { id },
+    data: active ? { isActive: true } : { isActive: false, telegramId: null }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: active ? "ENABLE_TELEGRAM_USER" : "DISABLE_TELEGRAM_USER",
+    entityType: "AllowedTelegramUser",
+    entityId: id
+  });
+  revalidatePath("/manager/employees");
+}
+
+export async function adminUpdateUserProfile(input: unknown) {
+  const { actor, isSuper } = await requireSuperAdminOrManagerForTelegramAccess();
+  const schema = z.object({
+    userId: z.string().cuid(),
+    firstName: z.string().trim().min(2, "Имя минимум 2 символа"),
+    lastName: z.string().trim().min(2, "Фамилия минимум 2 символа")
+  });
+  const data = schema.parse(input);
+  if (!isSuper) {
+    const target = await prisma.user.findUnique({
+      where: { id: data.userId },
+      select: { role: true }
+    });
+    if (!target || target.role !== UserRole.EMPLOYEE) {
+      throw new Error("Можно редактировать только профили сотрудников.");
+    }
+  }
+  const name = `${data.lastName} ${data.firstName}`.trim();
+  await prisma.user.update({
+    where: { id: data.userId },
+    data: { firstName: data.firstName, lastName: data.lastName, name }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "ADMIN_UPDATE_USER_PROFILE",
+    entityType: "User",
+    entityId: data.userId,
+    payload: data
+  });
+  revalidatePath("/manager/employees");
+}
+
+export async function revokeTelegramAccessByUsername(usernameInput: string) {
+  const { actor, isSuper } = await requireSuperAdminOrManagerForTelegramAccess();
+  const username = usernameInput.trim().toLowerCase().replace(/^@/, "");
+  const superAdminUsername = normalizedTelegramSuperAdminUsername();
+  if (username === superAdminUsername) throw new Error("Нельзя отзывать доступ у суперадмина.");
+  if (!isSuper) {
+    const allow = await prisma.allowedTelegramUser.findFirst({ where: { username } });
+    if (!allow || allow.role !== UserRole.EMPLOYEE) {
+      throw new Error("Отозвать можно только доступ сотрудника.");
+    }
+  }
+  await prisma.allowedTelegramUser.updateMany({
+    where: { username },
+    data: { isActive: false, telegramId: null }
+  });
+  await prisma.user.updateMany({
+    where: { telegramUsername: username, role: { not: UserRole.SUPER_ADMIN } },
+    data: { isActive: false }
+  });
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "REVOKE_TELEGRAM_ACCESS_BY_USERNAME",
+    entityType: "AllowedTelegramUser",
+    entityId: username
+  });
+  revalidatePath("/manager/employees");
+}
+
+export async function deleteEmployeeByUsername(usernameInput: string) {
+  const { actor, isSuper } = await requireSuperAdminOrManagerForTelegramAccess();
+  const username = usernameInput.trim().toLowerCase().replace(/^@/, "");
+  const superAdminUsername = normalizedTelegramSuperAdminUsername();
+  if (username === superAdminUsername) throw new Error("Суперадмина нельзя удалить.");
+
+  const allow = await prisma.allowedTelegramUser.findFirst({ where: { username } });
+  if (!isSuper && allow && allow.role !== UserRole.EMPLOYEE) {
+    throw new Error("Удалить можно только сотрудника.");
+  }
+
+  const candidates = await prisma.user.findMany({
+    where: { telegramUsername: { not: null } },
+    select: { id: true, role: true, telegramUsername: true }
+  });
+  const targets = candidates.filter((u) => (u.telegramUsername ?? "").toLowerCase() === username);
+  if (targets.some((u) => u.role === UserRole.SUPER_ADMIN)) throw new Error("Суперадмина нельзя удалить.");
+  if (!isSuper && targets.some((u) => u.role !== UserRole.EMPLOYEE)) {
+    throw new Error("Удалить можно только сотрудника.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.allowedTelegramUser.deleteMany({ where: { username } });
+    if (targets.length > 0) {
+      await tx.user.deleteMany({
+        where: { id: { in: targets.map((t) => t.id) }, role: { not: UserRole.SUPER_ADMIN } }
+      });
+    }
+  });
+
+  await writeAuditLog({
+    actorUserId: actor.id,
+    action: "DELETE_EMPLOYEE_BY_USERNAME",
+    entityType: "User",
+    entityId: username
+  });
+  revalidatePath("/manager/employees");
+}

@@ -1,0 +1,14 @@
+.next
+node_modules
+.env
+dist
+coverage
+*.log
+# миграции нужны для deploy; старый sqlite-файл не коммитим
+prisma/dev.db
+prisma/*.db
+public/uploads/*
+!public/uploads/reports/
+!public/uploads/reports/.gitkeep
+data/uploads/
+prisma/uploads/

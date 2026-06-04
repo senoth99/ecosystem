@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Drop {
+  id        String    @id @default(uuid())
+  name      String
+  type      String
+  dropDate  DateTime? @map("drop_date")
+  status    String    @default("ideation")
+  photo     String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  items     Item[]
+
+  @@map("drops")
+}
+
+model Item {
+  id            String      @id @default(uuid())
+  dropId        String?     @map("drop_id")
+  name          String
+  notes         String      @default("")
+  stage         String      @default("ideation")
+  photo         String?
+  samplePrinted Boolean     @default(false) @map("sample_printed")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  drop          Drop?       @relation(fields: [dropId], references: [id], onDelete: SetNull)
+  photos        ItemPhoto[]
+
+  @@index([dropId])
+  @@map("items")
+}
+
+model ItemPhoto {
+  id           String   @id @default(uuid())
+  itemId       String   @map("item_id")
+  filename     String
+  originalName String?  @map("original_name")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  item         Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
+  @@map("item_photos")
+}
+
+model Moment {
+  id        String   @id @default(uuid())
+  scope     String   @default("item")
+  scopeId   String   @map("scope_id")
+  stage     String
+  key       String
+  value     String   @default("")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([scope, scopeId, stage, key])
+  @@index([scopeId])
+  @@map("moments")
+}
+
+model Task {
+  id          String    @id @default(uuid())
+  scope       String
+  scopeId     String    @map("scope_id")
+  stage       String
+  title       String
+  completed   Boolean   @default(false)
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([scopeId, stage])
+  @@map("tasks")
+}

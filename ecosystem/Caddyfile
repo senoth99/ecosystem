@@ -1,0 +1,61 @@
+# Reverse proxy + автоматический HTTPS (Let's Encrypt)
+# DOMAIN и ACME_EMAIL задаются в .env
+
+{$DOMAIN} {
+	encode gzip zstd
+
+	# Экосистема: API auth
+	handle_path /api/eco/* {
+		reverse_proxy auth-service:4001
+	}
+
+	handle_path /api/catalog/* {
+		reverse_proxy catalog:4002
+	}
+
+	handle_path /api/media/* {
+		reverse_proxy media:4003
+	}
+
+	# Портал (главная, логин, админка)
+	@portal path / /login /login/* /admin /admin/*
+	handle @portal {
+		reverse_proxy portal:3100
+	}
+
+	handle /_next/* {
+		reverse_proxy portal:3100
+	}
+
+	# Приложения (basePath в Next.js)
+	handle /bloggers* {
+		reverse_proxy bloggers:3000
+	}
+	handle /drops* {
+		reverse_proxy drops:3000
+	}
+	handle /scheduler* {
+		reverse_proxy production-scheduler:3000
+	}
+	handle /shop* {
+		reverse_proxy shop-scheduler:3000
+	}
+	handle /nakleiki* {
+		reverse_proxy nakleiki:3000
+	}
+	handle /proizvodstvo* {
+		reverse_proxy proizvodstvo:3000
+	}
+	handle /zakazi* {
+		reverse_proxy proizvodstvo-zakazi:3000
+	}
+	handle /zarplaty* {
+		reverse_proxy zarplaty:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}

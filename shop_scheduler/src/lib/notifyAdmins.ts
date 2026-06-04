@@ -1,0 +1,265 @@
+import { readFile } from "fs/promises";
+import { AppNotificationType, UserRole } from "@/lib/enums";
+import { notifyUserAppAndTelegram } from "@/lib/notifyDispatch";
+import { prisma } from "@/lib/prisma";
+import { telegramSendMediaGroup, telegramSendMessage } from "@/lib/telegramBotHelpers";
+import { formatDateRu } from "@/lib/utils";
+import { resolveAllReportPhotoDiskPaths } from "@/lib/workplaceReportPhoto";
+
+type EmployeeShiftNotifyType =
+  | typeof AppNotificationType.SHIFT_ADDED_BY_EMPLOYEE
+  | typeof AppNotificationType.SHIFT_REMOVED_BY_EMPLOYEE;
+
+/** Только ADMIN и SUPER_ADMIN (без isManager). */
+export async function getAdminRoleUserIds(excludeUserIds: string[] = []): Promise<string[]> {
+  const exclude = new Set(excludeUserIds);
+  const rows = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      role: { in: [UserRole.ADMIN, UserRole.SUPER_ADMIN] }
+    },
+    select: { id: true }
+  });
+  return rows.map((r) => r.id).filter((id) => !exclude.has(id));
+}
+
+/** Кому слать обзорные уведомления по графику: роли ADMIN/SUPER_ADMIN и руководители (isManager). */
+export async function getScheduleMonitorUserIds(excludeUserIds: string[] = []): Promise<string[]> {
+  const exclude = new Set(excludeUserIds);
+  const rows = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      OR: [{ role: { in: [UserRole.ADMIN, UserRole.SUPER_ADMIN] } }, { isManager: true }]
+    },
+    select: { id: true }
+  });
+  return rows.map((r) => r.id).filter((id) => !exclude.has(id));
+}
+
+/** Колокольчик + Telegram всем, кто следит за графиком (кроме excludeUserIds). */
+export async function notifyScheduleAdmins(input: {
+  type: EmployeeShiftNotifyType;
+  title: string;
+  body: string;
+  telegramText: string;
+  payload?: unknown;
+  excludeUserIds?: string[];
+}) {
+  const userIds = await getScheduleMonitorUserIds(input.excludeUserIds ?? []);
+  if (!userIds.length) return;
+
+  await Promise.all(
+    userIds.map((userId) =>
+      notifyUserAppAndTelegram({
+        userId,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        payload: input.payload,
+        telegramText: input.telegramText
+      })
+    )
+  );
+}
+
+/** Колокольчик + Telegram только ADMIN и SUPER_ADMIN. */
+export async function notifyAdminRoleUsers(input: {
+  type: string;
+  title: string;
+  body: string;
+  telegramText: string;
+  payload?: unknown;
+  excludeUserIds?: string[];
+}) {
+  const userIds = await getAdminRoleUserIds(input.excludeUserIds ?? []);
+  if (!userIds.length) return;
+
+  await Promise.all(
+    userIds.map((userId) =>
+      notifyUserAppAndTelegram({
+        userId,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        payload: input.payload,
+        telegramText: input.telegramText
+      })
+    )
+  );
+}
+
+/** Сотрудник сам поставил / снял смену (график, форма). Снятие — только ADMIN/SUPER_ADMIN в Telegram. */
+export async function notifyAdminsEmployeeShiftChange(input: {
+  type: EmployeeShiftNotifyType;
+  employeeName: string;
+  brief: string;
+  payload?: unknown;
+  /** Обычно id сотрудника, чтобы не дублировать личное уведомление. */
+  excludeUserIds?: string[];
+}) {
+  const added = input.type === AppNotificationType.SHIFT_ADDED_BY_EMPLOYEE;
+  const title = added ? "Сотрудник записался на смену" : "Сотрудник снял смену";
+  const body = `${input.employeeName}: ${input.brief}`;
+  const telegramText = added
+    ? `📅 ${input.employeeName} записался на смену:\n${input.brief}`
+    : `📅 ${input.employeeName} снял смену:\n${input.brief}`;
+
+  if (added) {
+    await notifyScheduleAdmins({
+      type: input.type,
+      title,
+      body,
+      telegramText,
+      payload: input.payload,
+      excludeUserIds: input.excludeUserIds
+    });
+    return;
+  }
+
+  await notifyAdminRoleUsers({
+    type: input.type,
+    title,
+    body,
+    telegramText,
+    payload: input.payload,
+    excludeUserIds: input.excludeUserIds
+  });
+}
+
+const TELEGRAM_PHOTO_CAPTION_MAX = 1024;
+const TELEGRAM_MESSAGE_MAX = 4090;
+
+function chunkTelegramText(text: string, maxLen: number): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += maxLen) {
+    chunks.push(text.slice(i, i + maxLen));
+  }
+  return chunks;
+}
+
+/** Подпись к фото (≤1024) + остаток отчёта отдельными сообщениями (≤4090). */
+function buildShiftReportTelegramParts(header: string, reportText: string): {
+  caption: string;
+  followUpMessages: string[];
+} {
+  const full = `${header}\n\n${reportText}`;
+  if (full.length <= TELEGRAM_PHOTO_CAPTION_MAX) {
+    return { caption: full, followUpMessages: [] };
+  }
+
+  const prefix = `${header}\n\n`;
+  const room = TELEGRAM_PHOTO_CAPTION_MAX - prefix.length - 1;
+  if (room <= 0) {
+    return {
+      caption: header.slice(0, TELEGRAM_PHOTO_CAPTION_MAX),
+      followUpMessages: chunkTelegramText(reportText, TELEGRAM_MESSAGE_MAX)
+    };
+  }
+
+  const inCaption = reportText.slice(0, room);
+  const rest = reportText.slice(room);
+  const caption = rest.length ? `${prefix}${inCaption}…` : `${prefix}${inCaption}`;
+  return {
+    caption,
+    followUpMessages: rest.length ? chunkTelegramText(rest, TELEGRAM_MESSAGE_MAX) : []
+  };
+}
+
+async function sendShiftReportTelegram(
+  chatId: number,
+  photos: Buffer[],
+  header: string,
+  reportText: string
+) {
+  const { caption, followUpMessages } = buildShiftReportTelegramParts(header, reportText);
+
+  if (photos.length) {
+    await telegramSendMediaGroup(chatId, photos, caption);
+  } else {
+    const chunks = chunkTelegramText(`${header}\n\n${reportText}`, TELEGRAM_MESSAGE_MAX);
+    await telegramSendMessage(chatId, chunks[0] ?? header);
+    for (let i = 1; i < chunks.length; i++) {
+      await telegramSendMessage(chatId, chunks[i]!);
+    }
+    return;
+  }
+
+  for (const part of followUpMessages) {
+    await telegramSendMessage(chatId, part);
+  }
+}
+
+/** Новый отчёт по смене с фото — ADMIN/SUPER_ADMIN (колокольчик + фото в Telegram). */
+export async function notifyAdminsShiftReportSubmitted(input: {
+  reportId: string;
+  shiftId: string;
+  employeeName: string;
+  brief: string;
+  text: string;
+}) {
+  const reportText = input.text.trim();
+  const title = "Новый отчёт по смене";
+  const body = `${input.employeeName}\n${input.brief}\n\n${reportText}`;
+  const telegramHeader = `📋 Отчёт по смене\n${input.employeeName}\n${input.brief}`;
+
+  const userIds = await getAdminRoleUserIds();
+  if (!userIds.length) return;
+
+  const photoPaths = resolveAllReportPhotoDiskPaths(input.shiftId);
+  const photos: Buffer[] = [];
+  for (const photoPath of photoPaths) {
+    try {
+      photos.push(await readFile(photoPath));
+    } catch {
+      /* skip missing file */
+    }
+  }
+
+  await Promise.all(
+    userIds.map(async (userId) => {
+      await notifyUserAppAndTelegram({
+        userId,
+        type: AppNotificationType.SHIFT_REPORT_SUBMITTED,
+        title,
+        body,
+        payload: { reportId: input.reportId, shiftId: input.shiftId },
+        skipTelegram: true
+      });
+
+      const row = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { telegramId: true }
+      });
+      const chatId = row?.telegramId != null && row.telegramId !== "" ? Number(row.telegramId) : NaN;
+      if (!Number.isFinite(chatId)) return;
+
+      await sendShiftReportTelegram(chatId, photos, telegramHeader, reportText);
+    })
+  );
+}
+
+/** Сотрудник отметился на точке (QR), в т.ч. повторно. */
+export async function notifyAdminsShiftArrival(input: {
+  employeeName: string;
+  arrivedAt: Date;
+  zoneName?: string;
+}) {
+  const timeStr = formatDateRu(input.arrivedAt, "dd.MM.yyyy HH:mm");
+  const place = input.zoneName?.trim() ? ` · ${input.zoneName.trim()}` : "";
+  const body = `${input.employeeName}${place} — ${timeStr}`;
+  const telegramText = `🏪 Приход на смену\n${input.employeeName}${place}\n${timeStr}`;
+  const userIds = await getAdminRoleUserIds();
+  if (!userIds.length) return;
+
+  await Promise.all(
+    userIds.map((userId) =>
+      notifyUserAppAndTelegram({
+        userId,
+        type: AppNotificationType.SHIFT_ARRIVAL,
+        title: "Приход на смену",
+        body,
+        telegramText
+      })
+    )
+  );
+}

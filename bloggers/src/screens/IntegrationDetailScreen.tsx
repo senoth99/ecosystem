@@ -1,0 +1,1375 @@
+"use client";
+
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Pencil, Plus, Save, Trash2, X } from "lucide-react";
+import { ConfirmDeleteButton, StatusBadgeDropdown } from "@/components/ui";
+import { usePanelData } from "@/context/PanelDataContext";
+import { useUndo } from "@/context/UndoContext";
+import {
+  integrationReachTaskKey,
+  integrationReleaseVerifyTaskKey,
+} from "@/lib/panel-tasks";
+import { CasherProductPickerModal } from "@/components/CasherProductPickerModal";
+import { ContractorListModal } from "@/components/ContractorListModal";
+import { useCasherProducts } from "@/hooks/useCasherProducts";
+import {
+  casherProductSizeOptions,
+  formatCasherProductPositionTitle,
+} from "@/lib/casher-products";
+import { CrmPill } from "@/components/CrmPill";
+import {
+  CHANNEL_BADGE_CLASS,
+  CONTRACTOR_SIZE_CATEGORY_LABELS,
+  INTEGRATION_COOPERATION_LABELS,
+  INTEGRATION_COOPERATION_TYPES,
+  INTEGRATION_STATUSES,
+  INTEGRATION_STATUS_LABELS,
+  STATUS_BADGE_CLASS,
+  type Integration,
+  type IntegrationCooperationType,
+  type IntegrationPosition,
+  type IntegrationStatus,
+} from "@/types/panel-data";
+import {
+  formatCalendarDate,
+  formatIntegrationReleaseLine,
+  formatRuCpm,
+  formatRuDate,
+  formatRuMoney,
+  formatRuTime,
+} from "@/lib/format-ru";
+import {
+  integrationDisplayLink,
+  integrationPublicLinkHref,
+} from "@/lib/integration-link";
+import { computeContractorRating10 } from "@/lib/contractor-rating";
+import { ContractorRatingBadge } from "@/components/ContractorRatingBadge";
+import {
+  computeCpmRub,
+  formatIntegrationBudgetCell,
+  integrationEffectiveBudgetRub,
+  parseBudgetReachField,
+  positionDisplayBudgetRub,
+} from "@/lib/integration-metrics";
+import { abbreviateFio } from "@/lib/employee-utils";
+import { nicheChoiceCaption } from "@/lib/niche-display";
+import { selectNativeChevronPad } from "@/screens/dashboard-shared";
+
+const nfReach = new Intl.NumberFormat("ru-RU", {
+  maximumFractionDigits: 0,
+});
+
+const selectClass = `w-full min-w-0 border border-app-fg/15 bg-app-bg px-3 py-2.5 text-sm text-app-fg outline-none ring-app-accent/35 focus:ring-2 ${selectNativeChevronPad}`;
+
+const pickerFieldClass = `${selectClass} text-left`;
+
+const textareaClass = `${selectClass} min-h-[120px] resize-y leading-relaxed`;
+
+const overlayClass =
+  "fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-[2px]";
+
+const modalShellClass =
+  "flex max-h-[min(92vh,880px)] w-full max-w-lg flex-col border border-app-fg/20 bg-app-bg shadow-[0_0_40px_-12px_rgba(0,0,0,0.45)]";
+
+function integrationTitleKey(title: string): string {
+  return title.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** При открытом редактировании подставляем черновик, чтобы бюджет, охваты и CPM обновлялись сразу */
+function draftOrSaved(
+  isEditOpen: boolean,
+  draft: string,
+  saved: number | undefined,
+): number | undefined {
+  if (!isEditOpen) return saved;
+  const t = draft.trim();
+  if (t === "") return saved;
+  return parseBudgetReachField(draft) ?? saved;
+}
+
+function InfoBlock({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`rounded-sm border border-app-fg/10 bg-app-fg/[0.03] px-3.5 py-3 sm:px-4 ${className}`}
+    >
+      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-app-fg/45">{label}</p>
+      <div className="mt-1.5 min-w-0 text-sm leading-snug text-app-fg">{children}</div>
+    </div>
+  );
+}
+
+type IntegrationDetailScreenProps = {
+  integrationId?: string;
+  variant?: "page" | "drawer";
+  onClose?: () => void;
+  /** Открыть форму «Новая позиция» (после создания интеграции). */
+  promptAddPosition?: boolean;
+  onPromptAddPositionHandled?: () => void;
+};
+
+export function IntegrationDetailScreen({
+  integrationId: integrationIdProp,
+  variant = "page",
+  onClose,
+  promptAddPosition = false,
+  onPromptAddPositionHandled,
+}: IntegrationDetailScreenProps) {
+  const router = useRouter();
+  const params = useParams();
+  const integrationId =
+    integrationIdProp ?? (typeof params?.integrationId === "string" ? params.integrationId : "");
+  const isDrawer = variant === "drawer";
+  const {
+    contractors,
+    contractorLinks,
+    integrations,
+    contractorItems,
+    socialOptions,
+    nicheOptions,
+    employees,
+    isAdmin,
+    canWriteCore,
+    completedTaskKeys,
+    updateIntegration,
+    removeIntegration,
+    restoreIntegration,
+    addIntegrationPosition,
+    removeIntegrationPosition,
+  } = usePanelData();
+  const { showUndo } = useUndo();
+
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [titleError, setTitleError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isContractorPickerOpen, setIsContractorPickerOpen] = useState(false);
+  const [contractorDraft, setContractorDraft] = useState("");
+  const [assignedDraft, setAssignedDraft] = useState("");
+  const [statusDraft, setStatusDraft] = useState<IntegrationStatus>("draft");
+  const [socialDraft, setSocialDraft] = useState("");
+  const [releaseDateDraft, setReleaseDateDraft] = useState("");
+  const [releaseTimeDraft, setReleaseTimeDraft] = useState("");
+  const [budgetDraft, setBudgetDraft] = useState("");
+  const [reachDraft, setReachDraft] = useState("");
+  const [linkDraft, setLinkDraft] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+  const [cooperationDraft, setCooperationDraft] = useState<IntegrationCooperationType | "">(
+    "",
+  );
+
+  const [isAddPositionOpen, setIsAddPositionOpen] = useState(false);
+  const [posProductId, setPosProductId] = useState("");
+  const [posSize, setPosSize] = useState("");
+  const [posProductSearch, setPosProductSearch] = useState("");
+  const [isPosProductPickerOpen, setIsPosProductPickerOpen] = useState(false);
+  const [posBudgetDraft, setPosBudgetDraft] = useState("");
+  const {
+    products: casherProducts,
+    loading: casherProductsLoading,
+    error: casherProductsError,
+  } = useCasherProducts(isAddPositionOpen);
+
+  const row = integrations.find((i) => i.id === integrationId);
+  const contractor = contractors.find((c) => c.id === row?.contractorId);
+  const contractorSocialLinks = useMemo(() => {
+    if (!row?.contractorId) return [];
+    return contractorLinks.filter((l) => l.contractorId === row.contractorId);
+  }, [contractorLinks, row?.contractorId]);
+  const assignee = row?.assignedEmployeeId
+    ? employees.find((e) => e.id === row.assignedEmployeeId)
+    : undefined;
+  const socialLabel = row
+    ? socialOptions.find((o) => o.id === row.socialNetworkId)?.label ?? row.socialNetworkId
+    : "—";
+
+  const contractorNicheLabel = useMemo(() => {
+    if (!contractor?.nicheId) return "";
+    const raw = nicheOptions.find((o) => o.id === contractor.nicheId)?.label ?? "";
+    return raw ? nicheChoiceCaption(raw) : "";
+  }, [contractor?.nicheId, nicheOptions]);
+
+  const contractorRating10 = useMemo(() => {
+    if (!contractor) return 5;
+    const theirs = integrations.filter((i) => i.contractorId === contractor.id);
+    const nItems = contractorItems.filter((it) => it.contractorId === contractor.id).length;
+    return computeContractorRating10(theirs, nItems);
+  }, [contractor, integrations, contractorItems]);
+
+  const applyRowToDrafts = useCallback(
+    (source: Integration | undefined) => {
+      if (!source) return;
+      setTitleDraft(source.title ?? "");
+      setTitleError(null);
+      setSaveError(null);
+      setContractorDraft(source.contractorId);
+      setAssignedDraft(source.assignedEmployeeId ?? "");
+      setStatusDraft(source.status);
+      setSocialDraft(source.socialNetworkId);
+      setReleaseDateDraft(source.releaseDate ?? "");
+      setReleaseTimeDraft(source.releaseTime ?? "");
+      setBudgetDraft(source.budget != null ? String(source.budget) : "");
+      setReachDraft(source.reach != null ? String(source.reach) : "");
+      setLinkDraft(source.publicLink ?? "");
+      setCommentDraft(source.comment?.trim() || source.note?.trim() || "");
+      setCooperationDraft(
+        source.cooperationType === "barter" || source.cooperationType === "commercial"
+          ? source.cooperationType
+          : "",
+      );
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!row || isEditOpen) return;
+    applyRowToDrafts(row);
+  }, [isEditOpen, applyRowToDrafts, row]);
+
+  const closeEdit = useCallback(() => {
+    applyRowToDrafts(row);
+    setTitleError(null);
+    setSaveError(null);
+    setIsEditOpen(false);
+  }, [row, applyRowToDrafts]);
+
+  useEffect(() => {
+    if (!isEditOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeEdit();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isEditOpen, closeEdit]);
+
+  const persistDrawerField = useCallback(
+    (updates: Parameters<typeof updateIntegration>[1]) => {
+      if (!row) return;
+      updateIntegration(row.id, updates);
+    },
+    [row, updateIntegration],
+  );
+
+  const saveDrawerBlur = useCallback(() => {
+    if (!row || !isDrawer || !canWriteCore) return;
+    const t = titleDraft.trim();
+    if (!t) return;
+    if (
+      integrations.some(
+        (i) =>
+          i.id !== row.id && integrationTitleKey(i.title ?? "") === integrationTitleKey(t),
+      )
+    ) {
+      return;
+    }
+    const updates: Parameters<typeof updateIntegration>[1] = {
+      title: t,
+      contractorId: contractorDraft,
+      assignedEmployeeId: assignedDraft.trim() || undefined,
+      socialNetworkId: socialDraft,
+      releaseDate: releaseDateDraft.trim() || undefined,
+      releaseTime: releaseTimeDraft.trim() || undefined,
+      publicLink: linkDraft.trim() === "" ? "" : linkDraft,
+      comment: commentDraft.trim() === "" ? "" : commentDraft.trim(),
+      cooperationType:
+        cooperationDraft === "barter" || cooperationDraft === "commercial"
+          ? cooperationDraft
+          : undefined,
+    };
+    if (budgetDraft.trim() !== "") {
+      const budgetVal = parseBudgetReachField(budgetDraft);
+      if (budgetVal !== undefined) updates.budget = budgetVal;
+    }
+    if (reachDraft.trim() !== "") {
+      const reachVal = parseBudgetReachField(reachDraft);
+      if (reachVal !== undefined) updates.reach = reachVal;
+    }
+    persistDrawerField(updates);
+  }, [
+    row,
+    isDrawer,
+    canWriteCore,
+    titleDraft,
+    integrations,
+    contractorDraft,
+    assignedDraft,
+    socialDraft,
+    releaseDateDraft,
+    releaseTimeDraft,
+    budgetDraft,
+    reachDraft,
+    linkDraft,
+    commentDraft,
+    cooperationDraft,
+    persistDrawerField,
+  ]);
+
+  const handleDrawerClose = useCallback(() => {
+    if (isDrawer && canWriteCore && row) saveDrawerBlur();
+    onClose?.();
+  }, [isDrawer, canWriteCore, row, saveDrawerBlur, onClose]);
+
+  const posSelectedProduct = useMemo(
+    () => casherProducts.find((p) => String(p.id ?? "") === posProductId),
+    [casherProducts, posProductId],
+  );
+  const posSizeOptions = useMemo(
+    () => casherProductSizeOptions(posSelectedProduct),
+    [posSelectedProduct],
+  );
+
+  const resetPositionForm = useCallback(() => {
+    setPosProductId("");
+    setPosSize("");
+    setPosProductSearch("");
+    setIsPosProductPickerOpen(false);
+    setPosBudgetDraft("");
+  }, []);
+
+  const openAddPositionForm = useCallback(() => {
+    resetPositionForm();
+    setIsAddPositionOpen(true);
+  }, [resetPositionForm]);
+
+  useEffect(() => {
+    if (!promptAddPosition || !row || !canWriteCore) return;
+    openAddPositionForm();
+    onPromptAddPositionHandled?.();
+  }, [
+    promptAddPosition,
+    row,
+    canWriteCore,
+    openAddPositionForm,
+    onPromptAddPositionHandled,
+  ]);
+
+  if (!row) {
+    return (
+      <div className={isDrawer ? "space-y-3 p-4" : "space-y-4"}>
+        {!isDrawer ? <BackLink href="/integrations" /> : null}
+        <p className="text-sm text-app-fg/55">Интеграция не найдена.</p>
+      </div>
+    );
+  }
+
+  function openEdit() {
+    applyRowToDrafts(row);
+    setTitleError(null);
+    setSaveError(null);
+    setIsEditOpen(true);
+  }
+
+  function handleDelete() {
+    if (!isAdmin || !row) return;
+    const snapshot = { ...row };
+    const rk = integrationReachTaskKey(row.id);
+    const vk = integrationReleaseVerifyTaskKey(row.id);
+    const taskKeysSnapshot = completedTaskKeys.filter((k) => k === rk || k === vk);
+    removeIntegration(row.id);
+    showUndo("Интеграция удалена.", () => {
+      restoreIntegration(snapshot, taskKeysSnapshot);
+    });
+    if (isDrawer && onClose) onClose();
+    else router.replace("/integrations");
+  }
+
+  function handleSave() {
+    const target = integrations.find((i) => i.id === integrationId);
+    if (!target || !row) return;
+
+    const t = titleDraft.trim();
+    if (!t) {
+      setTitleError("Укажите заголовок.");
+      return;
+    }
+    if (
+      integrations.some(
+        (i) =>
+          i.id !== target.id &&
+          integrationTitleKey(i.title ?? "") === integrationTitleKey(t),
+      )
+    ) {
+      setTitleError("Такой заголовок уже используется.");
+      return;
+    }
+
+    const budgetTrim = budgetDraft.trim();
+    const budgetVal = parseBudgetReachField(budgetDraft);
+    if (budgetTrim !== "" && budgetVal === undefined) {
+      setSaveError("Проверьте формат бюджета.");
+      return;
+    }
+    const reachTrim = reachDraft.trim();
+    const reachVal = parseBudgetReachField(reachDraft);
+    if (reachTrim !== "" && reachVal === undefined) {
+      setSaveError("Проверьте формат охватов.");
+      return;
+    }
+    if (!contractorDraft.trim() || !contractors.some((c) => c.id === contractorDraft)) {
+      setSaveError("Выберите контрагента.");
+      return;
+    }
+    const socialOk = socialOptions.some((o) => o.id === socialDraft);
+    if (!socialOk) {
+      setSaveError("Выберите площадку.");
+      return;
+    }
+
+    setTitleError(null);
+    setSaveError(null);
+
+    updateIntegration(target.id, {
+      title: t,
+      contractorId: contractorDraft,
+      assignedEmployeeId: assignedDraft.trim() || undefined,
+      status: statusDraft,
+      socialNetworkId: socialDraft,
+      releaseDate: releaseDateDraft.trim() || undefined,
+      releaseTime: releaseTimeDraft.trim() || undefined,
+      budget: budgetVal,
+      reach: reachVal,
+      publicLink: linkDraft.trim() === "" ? "" : linkDraft,
+      comment: commentDraft.trim() === "" ? "" : commentDraft.trim(),
+      cooperationType:
+        cooperationDraft === "barter" || cooperationDraft === "commercial"
+          ? cooperationDraft
+          : undefined,
+    });
+    setIsEditOpen(false);
+  }
+
+  function handleAddPosition(e: React.FormEvent) {
+    e.preventDefault();
+    if (!row || !posSelectedProduct || !posSize.trim()) return;
+    const productName = (posSelectedProduct.name ?? "").trim();
+    if (!productName) return;
+    const titleTrim = formatCasherProductPositionTitle(productName, posSize);
+    const budget = parseBudgetReachField(posBudgetDraft);
+    addIntegrationPosition(row.id, {
+      title: titleTrim,
+      status: row.status,
+      socialNetworkId: row.socialNetworkId,
+      contractorId: row.contractorId,
+      ...(row.cooperationType === "barter" || row.cooperationType === "commercial"
+        ? { cooperationType: row.cooperationType }
+        : {}),
+      ...(row.assignedEmployeeId ? { assignedEmployeeId: row.assignedEmployeeId } : {}),
+      ...(row.releaseDate?.trim() ? { releaseDate: row.releaseDate.trim() } : {}),
+      ...(budget !== undefined ? { budget } : {}),
+    });
+    resetPositionForm();
+    setIsAddPositionOpen(false);
+  }
+
+  const budgetLive = draftOrSaved(isEditOpen || isDrawer, budgetDraft, row.budget);
+  const reachLive = draftOrSaved(isEditOpen || isDrawer, reachDraft, row.reach);
+  const cpmRub = computeCpmRub(budgetLive, reachLive);
+  const materialLink = row
+    ? integrationDisplayLink(row, contractorLinks, socialOptions)
+    : undefined;
+  const publicHref = integrationPublicLinkHref(materialLink);
+
+  const shellClass = isDrawer
+    ? "w-full space-y-4 p-4 pb-6"
+    : "mx-auto w-full max-w-3xl space-y-8 pb-10";
+
+  return (
+    <div className={shellClass}>
+      {isDrawer ? (
+        <header className="flex items-start justify-between gap-3 border-b border-app-fg/10 pb-3">
+          <div className="min-w-0 flex-1 space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-fg/45">
+              Заголовок интеграции
+            </p>
+            {canWriteCore ? (
+              <input
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={saveDrawerBlur}
+                className="w-full border border-app-fg/15 bg-app-bg px-2 py-1.5 text-base font-semibold text-app-fg outline-none ring-app-accent/35 focus:ring-2"
+              />
+            ) : (
+              <h1 className="text-base font-semibold text-app-fg">{row.title}</h1>
+            )}
+            {canWriteCore ? (
+              <StatusBadgeDropdown
+                value={row.status}
+                options={INTEGRATION_STATUSES.map((s) => ({
+                  value: s,
+                  label: INTEGRATION_STATUS_LABELS[s],
+                }))}
+                badgeClass={STATUS_BADGE_CLASS[row.status]}
+                onChange={(s) => {
+                  const next = s as IntegrationStatus;
+                  setStatusDraft(next);
+                  persistDrawerField({ status: next });
+                }}
+              />
+            ) : (
+              <CrmPill className={STATUS_BADGE_CLASS[row.status]}>
+                {INTEGRATION_STATUS_LABELS[row.status]}
+              </CrmPill>
+            )}
+          </div>
+          {onClose && !isContractorPickerOpen && !isPosProductPickerOpen ? (
+            <button
+              type="button"
+              onClick={handleDrawerClose}
+              className="shrink-0 border border-app-fg/15 p-1.5 text-app-fg/70 transition hover:border-app-fg/40"
+              aria-label="Закрыть"
+            >
+              <X className="h-4 w-4" strokeWidth={1.5} />
+            </button>
+          ) : null}
+        </header>
+      ) : (
+        <>
+          <BackLink href="/integrations" />
+          <header className="flex flex-col gap-4 border-b border-app-fg/10 pb-6 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0 space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-app-fg/50">
+            Интеграция
+          </p>
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <h1 className="min-w-0 flex-1 text-balance text-xl font-semibold tracking-tight text-app-fg sm:text-2xl">
+              {row.title}
+            </h1>
+            <CrmPill className={`${STATUS_BADGE_CLASS[row.status]} shrink-0`}>
+              {INTEGRATION_STATUS_LABELS[row.status]}
+            </CrmPill>
+          </div>
+          <p className="text-xs text-app-fg/50">
+            Создана {formatRuDate(row.createdAt ?? "")} · {formatRuTime(row.createdAt ?? "")}
+          </p>
+        </div>
+        {canWriteCore ? (
+          <button
+            type="button"
+            onClick={openEdit}
+            className="inline-flex shrink-0 items-center justify-center gap-2 border border-app-fg/20 bg-app-fg/[0.04] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-app-fg transition hover:border-app-accent/50 hover:bg-app-accent/10"
+          >
+            <Pencil className="h-3.5 w-3.5" strokeWidth={1.75} />
+            Редактировать
+          </button>
+        ) : null}
+      </header>
+        </>
+      )}
+
+      {isDrawer ? (
+        <section className="space-y-3">
+          {contractor ? (
+            <div className="space-y-2 text-xs text-app-fg/55">
+              <p>
+                Контрагент:{" "}
+                <Link
+                  href={`/contractors?${new URLSearchParams({ id: contractor.id }).toString()}`}
+                  className="font-medium text-app-fg transition hover:text-app-accent"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {(contractor.contactPerson?.trim() || contractor.name).toUpperCase()} ·{" "}
+                  {contractor.name}
+                </Link>
+              </p>
+              {contractorSocialLinks.length > 0 ? (
+                <ul className="flex flex-wrap gap-2">
+                  {contractorSocialLinks.map((item) => {
+                    const href = integrationPublicLinkHref(item.url);
+                    return (
+                      <li key={item.id}>
+                        {href ? (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1.5 border border-app-fg/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-app-accent transition hover:border-app-accent/40"
+                          >
+                            <CrmPill className={CHANNEL_BADGE_CLASS}>{item.title}</CrmPill>
+                          </a>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 border border-app-fg/15 px-2 py-1 text-[10px] text-app-fg/60">
+                            {item.title}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          {canWriteCore ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="text-[10px] uppercase tracking-wider text-app-fg/55">
+                Площадка
+                <select
+                  value={socialDraft}
+                  onChange={(e) => setSocialDraft(e.target.value)}
+                  onBlur={saveDrawerBlur}
+                  className={`${selectClass} mt-1`}
+                >
+                  {socialOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-[10px] uppercase tracking-wider text-app-fg/55">
+                Дата выхода
+                <input
+                  type="date"
+                  value={releaseDateDraft}
+                  onChange={(e) => setReleaseDateDraft(e.target.value)}
+                  onBlur={saveDrawerBlur}
+                  className={`${selectClass} mt-1`}
+                />
+              </label>
+              <label className="text-[10px] uppercase tracking-wider text-app-fg/55">
+                Время выхода
+                <input
+                  type="time"
+                  value={releaseTimeDraft}
+                  onChange={(e) => setReleaseTimeDraft(e.target.value)}
+                  onBlur={saveDrawerBlur}
+                  className={`${selectClass} mt-1`}
+                />
+              </label>
+              <label className="text-[10px] uppercase tracking-wider text-app-fg/55">
+                Бюджет, ₽
+                <input
+                  type="text"
+                  value={budgetDraft}
+                  onChange={(e) => setBudgetDraft(e.target.value)}
+                  onBlur={saveDrawerBlur}
+                  className={`${selectClass} mt-1 tabular-nums`}
+                />
+              </label>
+              <label className="text-[10px] uppercase tracking-wider text-app-fg/55">
+                Охваты
+                <input
+                  type="text"
+                  value={reachDraft}
+                  onChange={(e) => setReachDraft(e.target.value)}
+                  onBlur={saveDrawerBlur}
+                  className={`${selectClass} mt-1 tabular-nums`}
+                />
+              </label>
+              <label className="text-[10px] uppercase tracking-wider text-app-fg/55 sm:col-span-2">
+                Ссылка на интеграцию
+                <input
+                  type="url"
+                  inputMode="url"
+                  autoComplete="url"
+                  value={linkDraft}
+                  onChange={(e) => setLinkDraft(e.target.value)}
+                  onBlur={saveDrawerBlur}
+                  placeholder="https://… пост, ролик, сторис"
+                  className={`${selectClass} mt-1 font-mono text-[13px]`}
+                />
+              </label>
+            </div>
+          ) : null}
+
+          {materialLink ? (
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-app-fg/50">
+                {canWriteCore ? "Ссылка" : "Ссылка на материал"}
+              </p>
+              {publicHref ? (
+                <a
+                  href={publicHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-all font-mono text-[13px] text-app-accent transition hover:underline"
+                >
+                  {materialLink}
+                </a>
+              ) : (
+                <span className="break-all font-mono text-[13px] text-app-fg/80">{materialLink}</span>
+              )}
+            </div>
+          ) : canWriteCore ? null : (
+            <p className="text-xs text-app-fg/50">Ссылка на материал не указана</p>
+          )}
+
+          {canWriteCore ? (
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="inline-flex items-center gap-2 border border-app-fg/15 px-3 py-2 text-xs text-app-fg/70 transition hover:border-red-500/40 hover:text-red-400"
+            >
+              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+              Удалить
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {!isDrawer ? (
+      <section className="space-y-4">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-app-fg/45">
+          Данные интеграции
+        </h2>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <InfoBlock label="Площадка">
+            <CrmPill className={CHANNEL_BADGE_CLASS}>{socialLabel}</CrmPill>
+          </InfoBlock>
+          <InfoBlock label="Дата и время выхода">
+            {formatIntegrationReleaseLine(row.releaseDate, row.releaseTime)}
+          </InfoBlock>
+          <InfoBlock label="Контрагент">
+            {contractor ? (
+              <span className="inline-flex flex-wrap items-center gap-2">
+                <Link
+                  href={`/contractors/${contractor.id}`}
+                  className="font-medium text-app-fg transition"
+                >
+                  {contractor.name}
+                </Link>
+                <ContractorRatingBadge value={contractorRating10} />
+              </span>
+            ) : (
+              <span className="text-app-fg/50">Не указан</span>
+            )}
+          </InfoBlock>
+          <InfoBlock label="Ниша">
+            {contractorNicheLabel ? (
+              <span className="text-app-fg">{contractorNicheLabel}</span>
+            ) : (
+              <span className="text-app-fg/50">Не задана</span>
+            )}
+          </InfoBlock>
+          <InfoBlock label="Категория">
+            {contractor?.sizeCategory ? (
+              <span className="text-app-fg">
+                {CONTRACTOR_SIZE_CATEGORY_LABELS[contractor.sizeCategory]}
+              </span>
+            ) : (
+              <span className="text-app-fg/50">Не задана</span>
+            )}
+          </InfoBlock>
+          <InfoBlock label="Условия сотрудничества">
+            {row.cooperationType ? (
+              <span className="text-app-fg">
+                {INTEGRATION_COOPERATION_LABELS[row.cooperationType]}
+              </span>
+            ) : (
+              <span className="text-app-fg/50">Не указано</span>
+            )}
+          </InfoBlock>
+          <InfoBlock label="Бюджет">
+            <span className="tabular-nums">
+              {budgetLive != null ? `${formatRuMoney(budgetLive)} ₽` : "—"}
+            </span>
+          </InfoBlock>
+          <InfoBlock label="Охваты">
+            <span className="tabular-nums">
+              {reachLive != null ? nfReach.format(reachLive) : "—"}
+            </span>
+          </InfoBlock>
+          <div className="grid min-w-0 grid-cols-2 gap-3 sm:col-span-2">
+            <InfoBlock label="CPM" className="min-w-0">
+              <span className="tabular-nums">
+                {cpmRub != null ? `${formatRuCpm(cpmRub)} ₽ за 1000 охватов` : "—"}
+              </span>
+            </InfoBlock>
+            <InfoBlock label="Сотрудник" className="min-w-0">
+              {assignee ? (
+                <span>
+                  <span className="font-medium">{abbreviateFio(assignee.fullName)}</span>
+                </span>
+              ) : (
+                <span className="text-app-fg/50">Не назначен</span>
+              )}
+            </InfoBlock>
+          </div>
+          <InfoBlock label="Ссылка на материал" className="sm:col-span-2">
+            {materialLink ? (
+              publicHref ? (
+                <a
+                  href={publicHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-all font-mono text-[13px] text-app-fg transition"
+                >
+                  {materialLink}
+                </a>
+              ) : (
+                <span className="break-all font-mono text-[13px] text-app-fg/80">{materialLink}</span>
+              )
+            ) : (
+              <span className="text-app-fg/50">Не указана</span>
+            )}
+          </InfoBlock>
+          {contractorSocialLinks.length > 0 ? (
+            <InfoBlock label="Соцсети контрагента" className="sm:col-span-2">
+              <ul className="space-y-2">
+                {contractorSocialLinks.map((item) => {
+                  const href = integrationPublicLinkHref(item.url);
+                  return (
+                    <li key={item.id} className="flex flex-wrap items-center gap-2">
+                      <CrmPill className={CHANNEL_BADGE_CLASS}>{item.title}</CrmPill>
+                      {href ? (
+                        <a
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="min-w-0 break-all font-mono text-[13px] text-app-accent hover:underline"
+                        >
+                          {item.url}
+                        </a>
+                      ) : (
+                        <span className="break-all font-mono text-[13px] text-app-fg/70">
+                          {item.url}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </InfoBlock>
+          ) : null}
+          <InfoBlock label="Комментарий" className="sm:col-span-2">
+            {row.comment?.trim() || row.note?.trim() ? (
+              <span className="whitespace-pre-wrap text-sm leading-relaxed text-app-fg">
+                {(row.comment ?? row.note ?? "").trim()}
+              </span>
+            ) : (
+              <span className="text-app-fg/50">Нет комментария</span>
+            )}
+          </InfoBlock>
+        </div>
+      </section>
+      ) : null}
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-app-fg/45">
+            Позиции
+          </h2>
+          {canWriteCore && (
+            <button
+              type="button"
+              onClick={() => (isAddPositionOpen ? setIsAddPositionOpen(false) : openAddPositionForm())}
+              className="inline-flex items-center gap-1.5 border border-app-fg/20 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-app-fg transition hover:border-app-accent/50 hover:bg-app-accent/10"
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+              {isAddPositionOpen ? "Отмена" : "Добавить"}
+            </button>
+          )}
+        </div>
+
+        {(row.positions ?? []).length === 0 && !isAddPositionOpen ? (
+          <p className="border border-dashed border-app-fg/15 px-4 py-6 text-center text-sm text-app-fg/40">
+            Позиций нет
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {(row.positions ?? []).length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[600px] border-separate border-spacing-0 text-left text-[11px] text-app-fg">
+                  <thead>
+                    <tr className="text-[10px] font-semibold uppercase tracking-wide text-app-fg/50">
+                      <th className="border-b border-app-fg/10 px-3 py-2">Название</th>
+                      <th className="border-b border-app-fg/10 px-3 py-2">Статус</th>
+                      <th className="border-b border-app-fg/10 px-3 py-2">Площадка</th>
+                      <th className="border-b border-app-fg/10 px-3 py-2">Дата</th>
+                      <th className="border-b border-app-fg/10 px-3 py-2 text-right">Бюджет, ₽</th>
+                      {canWriteCore && <th className="border-b border-app-fg/10 px-3 py-2" />}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(row.positions ?? []).map((pos) => {
+                      const posContractor = contractors.find((c) => c.id === pos.contractorId);
+                      const posSocial = socialOptions.find((o) => o.id === pos.socialNetworkId);
+                      return (
+                        <tr key={pos.id} className="border-t border-app-fg/8 hover:bg-app-fg/[0.02]">
+                          <td className="px-3 py-2 font-medium">{pos.title}</td>
+                          <td className="px-3 py-2">
+                            <CrmPill className={STATUS_BADGE_CLASS[pos.status]}>
+                              {INTEGRATION_STATUS_LABELS[pos.status]}
+                            </CrmPill>
+                          </td>
+                          <td className="px-3 py-2 text-app-fg/70">{posSocial?.label ?? "—"}</td>
+                          <td className="px-3 py-2 text-app-fg/70">{pos.releaseDate ? formatCalendarDate(pos.releaseDate) : "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {(() => {
+                              const b = positionDisplayBudgetRub(pos, row);
+                              return b != null ? formatRuMoney(b) : "—";
+                            })()}
+                          </td>
+                          {canWriteCore && (
+                            <td className="px-3 py-2">
+                              <ConfirmDeleteButton
+                                onConfirm={() => removeIntegrationPosition(row.id, pos.id)}
+                                confirmLabel="?"
+                                className="text-app-fg/30 transition hover:text-red-400"
+                                confirmClassName="font-medium text-red-400"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+                              </ConfirmDeleteButton>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  {integrationEffectiveBudgetRub(row) != null && (
+                    <tfoot>
+                      <tr className="border-t border-app-fg/15 font-semibold">
+                        <td className="px-3 py-2 text-[10px] uppercase tracking-wide text-app-fg/55" colSpan={4}>
+                          Итого
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {formatIntegrationBudgetCell(row)}
+                        </td>
+                        {canWriteCore && <td />}
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            )}
+
+            {canWriteCore && isAddPositionOpen && (
+              <form onSubmit={handleAddPosition} className="space-y-3 border border-app-fg/15 p-4">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-app-fg/45">
+                    Новая позиция
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-app-fg/50">
+                    Площадка, дата, контрагент, статус и сотрудник подставятся из интеграции — выберите
+                    вещь из каталога и размер.
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <label className="block text-[10px] uppercase tracking-wider text-app-fg/55">
+                      Вещь *
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setIsPosProductPickerOpen(true)}
+                      disabled={casherProductsLoading || casherProducts.length === 0}
+                      className={`${pickerFieldClass} mt-1 disabled:opacity-50`}
+                    >
+                      <span className="line-clamp-1">
+                        {casherProductsLoading
+                          ? "Загрузка каталога…"
+                          : casherProductsError
+                            ? casherProductsError
+                            : (posSelectedProduct?.name ?? "Нажмите для выбора вещи")}
+                      </span>
+                    </button>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-app-fg/55">
+                      Размер *
+                    </label>
+                    <select
+                      required
+                      value={posSize}
+                      onChange={(e) => setPosSize(e.target.value)}
+                      disabled={!posSelectedProduct}
+                      className={`${selectClass} mt-1`}
+                    >
+                      <option value="">Выбрать размер</option>
+                      {posSizeOptions.map((size) => (
+                        <option key={size} value={size}>
+                          {size}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-app-fg/55">
+                      Бюджет позиции, ₽
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={posBudgetDraft}
+                      onChange={(e) => setPosBudgetDraft(e.target.value)}
+                      placeholder="необязательно"
+                      className="mt-1 w-full border border-app-fg/15 bg-app-bg px-3 py-2 text-sm text-app-fg outline-none ring-app-accent/35 focus:ring-2"
+                    />
+                  </div>
+                </div>
+                <dl className="grid gap-1 text-[11px] text-app-fg/55 sm:grid-cols-2">
+                  <div>
+                    <dt className="inline after:content-[':']">Площадка</dt>
+                    <dd className="inline text-app-fg/80"> {socialLabel}</dd>
+                  </div>
+                  <div>
+                    <dt className="inline after:content-[':']">Дата</dt>
+                    <dd className="inline text-app-fg/80">
+                      {" "}
+                      {row.releaseDate ? formatCalendarDate(row.releaseDate) : "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="inline after:content-[':']">Контрагент</dt>
+                    <dd className="inline text-app-fg/80">
+                      {" "}
+                      {contractor?.contactPerson?.trim() || contractor?.name || "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="inline after:content-[':']">Сотрудник</dt>
+                    <dd className="inline text-app-fg/80"> {assignee?.fullName ?? "—"}</dd>
+                  </div>
+                </dl>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={!posSelectedProduct || !posSize.trim()}
+                    className="border border-app-fg/20 bg-app-fg/[0.04] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-app-fg transition hover:border-app-accent/50 hover:bg-app-accent/10 disabled:opacity-50"
+                  >
+                    Добавить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetPositionForm();
+                      setIsAddPositionOpen(false);
+                    }}
+                    className="border border-app-fg/15 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-app-fg/60 transition hover:border-app-fg/30"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+      </section>
+
+      <CasherProductPickerModal
+        open={isAddPositionOpen && isPosProductPickerOpen}
+        onClose={() => setIsPosProductPickerOpen(false)}
+        products={casherProducts}
+        search={posProductSearch}
+        onSearchChange={setPosProductSearch}
+        selectedProductId={posProductId}
+        onSelectProduct={(id) => {
+          setPosProductId(id);
+          setPosSize("");
+        }}
+        loading={casherProductsLoading}
+        error={casherProductsError}
+      />
+
+      {canWriteCore && isEditOpen && !isDrawer ? (
+        <div className={overlayClass} role="presentation" onClick={closeEdit}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="integration-edit-title"
+            className={modalShellClass}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-app-fg/15 px-5 py-4 sm:px-6">
+              <div>
+                <p
+                  id="integration-edit-title"
+                  className="text-sm font-semibold uppercase tracking-[0.12em] text-app-fg"
+                >
+                  Редактирование
+                </p>
+                <p className="mt-1 max-w-[280px] text-xs leading-relaxed text-app-fg/50">
+                  Изменения сохраняются в карточке после нажатия «Сохранить».
+                </p>
+              </div>
+              {!isContractorPickerOpen ? (
+                <button
+                  type="button"
+                  onClick={closeEdit}
+                  className="border border-app-fg/15 p-2 text-app-fg/65 transition hover:border-app-fg/35"
+                  aria-label="Закрыть"
+                >
+                  <X className="h-4 w-4" strokeWidth={1.5} />
+                </button>
+              ) : null}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs uppercase tracking-wider text-app-fg/55">
+                    Заголовок в списке
+                    <input
+                      value={titleDraft}
+                      onChange={(e) => {
+                        setTitleDraft(e.target.value);
+                        setTitleError(null);
+                        setSaveError(null);
+                      }}
+                      required
+                      placeholder="Уникальное название"
+                      className={`${selectClass} mt-1`}
+                    />
+                  </label>
+                  {titleError ? (
+                    <p className="mt-1.5 text-xs text-app-fg/80">{titleError}</p>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-xs uppercase tracking-wider text-app-fg/55">
+                    Статус интеграции
+                    <select
+                      value={statusDraft}
+                      onChange={(e) => {
+                        setStatusDraft(e.target.value as IntegrationStatus);
+                        setSaveError(null);
+                      }}
+                      className={`${selectClass} mt-1`}
+                    >
+                      {INTEGRATION_STATUSES.map((s) => (
+                        <option key={s} value={s}>
+                          {INTEGRATION_STATUS_LABELS[s]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-xs uppercase tracking-wider text-app-fg/55">
+                    Соцсеть
+                    <select
+                      value={socialDraft}
+                      onChange={(e) => {
+                        setSocialDraft(e.target.value);
+                        setSaveError(null);
+                      }}
+                      className={`${selectClass} mt-1`}
+                    >
+                      {socialOptions.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div>
+                  <p className="mb-2 text-xs uppercase tracking-wider text-app-fg/55">Контрагент</p>
+                  <button
+                    type="button"
+                    onClick={() => setIsContractorPickerOpen(true)}
+                    className="w-full border border-app-fg/15 bg-app-bg px-3 py-2.5 text-left text-sm text-app-fg outline-none ring-app-accent/35 transition hover:border-app-fg/40"
+                  >
+                    {(() => {
+                      const selected = contractors.find((c) => c.id === contractorDraft);
+                      if (!selected) return "Выбрать контрагента";
+                      return `${(selected.contactPerson?.trim() || selected.name).toUpperCase()} · ${selected.name}`;
+                    })()}
+                  </button>
+                </div>
+
+                <label className="block text-xs uppercase tracking-wider text-app-fg/55">
+                  Условия сотрудничества
+                  <select
+                    value={cooperationDraft}
+                    onChange={(e) => {
+                      setCooperationDraft(
+                        (e.target.value as IntegrationCooperationType | "") || "",
+                      );
+                      setSaveError(null);
+                    }}
+                    className={`${selectClass} mt-1`}
+                  >
+                    <option value="">Не указано</option>
+                    <option value="barter">Бартер</option>
+                    <option value="commercial">Коммерция</option>
+                  </select>
+                </label>
+
+                <div>
+                  <label className="text-xs uppercase tracking-wider text-app-fg/55">
+                    Закреплённый сотрудник
+                    <select
+                      value={assignedDraft}
+                      onChange={(e) => {
+                        setAssignedDraft(e.target.value.trim());
+                        setSaveError(null);
+                      }}
+                      className={`${selectClass} mt-1`}
+                    >
+                      <option value="">Не назначен</option>
+                      {employees.map((em) => (
+                        <option key={em.id} value={em.id}>
+                          {abbreviateFio(em.fullName)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block text-xs uppercase tracking-wider text-app-fg/55">
+                    Дата выхода
+                    <input
+                      type="date"
+                      value={releaseDateDraft}
+                      onChange={(e) => {
+                        setReleaseDateDraft(e.target.value);
+                        setSaveError(null);
+                      }}
+                      className={`${selectClass} mt-1`}
+                    />
+                  </label>
+                  <label className="block text-xs uppercase tracking-wider text-app-fg/55">
+                    Время выхода
+                    <input
+                      type="time"
+                      value={releaseTimeDraft}
+                      onChange={(e) => {
+                        setReleaseTimeDraft(e.target.value);
+                        setSaveError(null);
+                      }}
+                      className={`${selectClass} mt-1`}
+                    />
+                  </label>
+                </div>
+                <p className="text-xs leading-relaxed text-app-fg/45">
+                  Если заданы дата и время выхода и закреплённый сотрудник, после наступления этого
+                  момента ему появится задача проверить публикацию (раздел «Задачи»).
+                </p>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block text-xs uppercase tracking-wider text-app-fg/55">
+                    Бюджет, ₽
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={budgetDraft}
+                      onChange={(e) => {
+                        setBudgetDraft(e.target.value);
+                        setSaveError(null);
+                      }}
+                      placeholder="0"
+                      className={`${selectClass} mt-1 tabular-nums`}
+                    />
+                  </label>
+                  <label className="block text-xs uppercase tracking-wider text-app-fg/55">
+                    Охваты
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={reachDraft}
+                      onChange={(e) => {
+                        setReachDraft(e.target.value);
+                        setSaveError(null);
+                      }}
+                      placeholder="0"
+                      className={`${selectClass} mt-1 tabular-nums`}
+                    />
+                  </label>
+                  <label className="block text-xs uppercase tracking-wider text-app-fg/55 sm:col-span-2">
+                    Ссылка на интеграцию
+                    <input
+                      type="url"
+                      inputMode="url"
+                      autoComplete="url"
+                      value={linkDraft}
+                      onChange={(e) => {
+                        setLinkDraft(e.target.value);
+                        setSaveError(null);
+                      }}
+                      placeholder="https://… или youtube.com/…"
+                      className={`${selectClass} mt-1 font-mono text-[13px]`}
+                    />
+                  </label>
+                  <label className="block text-xs uppercase tracking-wider text-app-fg/55 sm:col-span-2">
+                    Комментарий
+                    <textarea
+                      value={commentDraft}
+                      onChange={(e) => {
+                        setCommentDraft(e.target.value);
+                        setSaveError(null);
+                      }}
+                      placeholder="Внутренние пометки по интеграции…"
+                      rows={5}
+                      className={`${textareaClass} mt-1`}
+                    />
+                  </label>
+                </div>
+
+                {saveError ? (
+                  <p className="border border-app-fg/20 bg-app-fg/5 px-3 py-2 text-xs text-app-fg/90">
+                    {saveError}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 flex-col gap-2 border-t border-app-fg/15 bg-app-fg/[0.02] px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+              <button
+                type="button"
+                onClick={handleDelete}
+                className="inline-flex items-center justify-center gap-2 border border-app-fg/15 px-4 py-2.5 text-xs font-medium text-app-fg/75 transition hover:border-red-500/40 hover:bg-red-500/5 sm:order-2"
+              >
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+                Удалить
+              </button>
+              <div className="flex flex-col gap-2 sm:flex-row sm:gap-3">
+                <button
+                  type="button"
+                  onClick={closeEdit}
+                  className="inline-flex items-center justify-center border border-app-fg/20 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-app-fg/80 transition hover:border-app-fg/40"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  className="inline-flex items-center justify-center gap-2 bg-app-accent px-5 py-2.5 text-xs font-semibold uppercase tracking-wide text-app-fg transition hover:brightness-125"
+                >
+                  <Save className="h-3.5 w-3.5" strokeWidth={1.75} />
+                  Сохранить
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <ContractorListModal
+        open={isContractorPickerOpen}
+        onClose={() => setIsContractorPickerOpen(false)}
+        zIndexClass="z-[70]"
+        contractors={contractors}
+        onPick={(id) => {
+          setContractorDraft(id);
+          setSaveError(null);
+        }}
+      />
+    </div>
+  );
+}
+
+function BackLink({ href }: { href: string }) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex items-center gap-2 text-sm text-app-fg/55 transition"
+    >
+      <ArrowLeft className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+      Назад к списку
+    </Link>
+  );
+}

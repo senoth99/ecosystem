@@ -1,0 +1,144 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  @apply bg-app-bg text-app-fg antialiased;
+}
+
+/* Ссылки без подчёркивания (в т.ч. при hover) */
+a,
+a:hover,
+a:focus,
+a:active {
+  text-decoration: none;
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(13, 92, 50, 0.45) #000000;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #000000;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #0d5c32;
+  opacity: 0.5;
+  border-radius: 0;
+}
+
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Единый стиль: без скруглений у блоков, полей, ячеек и кнопок */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+/* Страница входа — скругления и свечение как в референсе */
+.login-root .login-modal {
+  border-radius: 14px !important;
+}
+.login-root .login-field,
+.login-root .login-submit {
+  border-radius: 10px !important;
+}
+
+.login-root .login-busy-dot {
+  border-radius: 9999px !important;
+}
+
+/* Фон рабочей области (main): сетка + мягкое свечение акцента, без хедера и сайдбара */
+.app-main-surface {
+  background-color: #000000;
+  background-image:
+    radial-gradient(ellipse 90% 55% at 8% -5%, rgba(13, 92, 50, 0.18) 0%, transparent 58%),
+    radial-gradient(ellipse 70% 45% at 100% 105%, rgba(13, 92, 50, 0.11) 0%, transparent 52%),
+    radial-gradient(ellipse 55% 40% at 50% 50%, rgba(255, 255, 255, 0.02) 0%, transparent 70%),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 47px,
+      rgba(255, 255, 255, 0.028) 47px,
+      rgba(255, 255, 255, 0.028) 48px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 47px,
+      rgba(255, 255, 255, 0.028) 47px,
+      rgba(255, 255, 255, 0.028) 48px
+    );
+  background-size:
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    48px 48px,
+    48px 48px;
+  background-attachment: local;
+}
+
+@media (min-width: 768px) {
+  .app-main-surface {
+    background-image:
+      radial-gradient(ellipse 90% 55% at 8% -5%, rgba(13, 92, 50, 0.18) 0%, transparent 58%),
+      radial-gradient(ellipse 70% 45% at 100% 105%, rgba(13, 92, 50, 0.11) 0%, transparent 52%),
+      radial-gradient(ellipse 55% 40% at 50% 50%, rgba(255, 255, 255, 0.02) 0%, transparent 70%),
+      repeating-linear-gradient(
+        105deg,
+        transparent 0,
+        transparent 39px,
+        rgba(255, 255, 255, 0.022) 39px,
+        rgba(255, 255, 255, 0.022) 40px
+      ),
+      repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 47px,
+        rgba(255, 255, 255, 0.026) 47px,
+        rgba(255, 255, 255, 0.026) 48px
+      ),
+      repeating-linear-gradient(
+        90deg,
+        transparent 0,
+        transparent 47px,
+        rgba(255, 255, 255, 0.026) 47px,
+        rgba(255, 255, 255, 0.026) 48px
+      );
+    background-size:
+      100% 100%,
+      100% 100%,
+      100% 100%,
+      56px 56px,
+      48px 48px,
+      48px 48px;
+  }
+}

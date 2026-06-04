@@ -1,0 +1,276 @@
+# Production: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+name: casher-ecosystem
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ecosystem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-ecosystem}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./scripts/init-dbs.sql:/docker-entrypoint-initdb.d/init-dbs.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ecosystem}"]
+      interval: 5s
+      timeout: 5s
+      retries: 8
+    networks: [internal]
+
+  auth-service:
+    build: ./auth-service
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment: &auth-env
+      PORT: "4001"
+      ECOSYSTEM_DATABASE_URL: postgresql://${POSTGRES_USER:-ecosystem}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ecosystem}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}
+      NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${NEXT_PUBLIC_TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      SUPERADMIN_USERNAMES: ${SUPERADMIN_USERNAMES:-contact_voropaev,ivanvoropaeff}
+      TELEGRAM_ALLOW_DEV_LOGIN: ${TELEGRAM_ALLOW_DEV_LOGIN:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      CORS_ORIGIN: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+    networks: [internal]
+
+  catalog:
+    build: ./services/catalog
+    restart: unless-stopped
+    environment:
+      PORT: "4002"
+      CASHER_API_BASE: ${CASHER_API_BASE:-https://api.cashercollection.com}
+    networks: [internal]
+
+  media:
+    build: ./services/media
+    restart: unless-stopped
+    volumes:
+      - media_data:/data/media
+    environment:
+      PORT: "4003"
+      MEDIA_ROOT: /data/media
+      IMG_PROXY_HOSTS: ${IMG_PROXY_HOSTS:-api.cashercollection.com,cdn.cashercollection.com}
+    networks: [internal]
+
+  portal:
+    build:
+      context: ./portal
+      args:
+        NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${NEXT_PUBLIC_TELEGRAM_BOT_USERNAME:-}
+        NEXT_PUBLIC_TELEGRAM_AUTH_DEV: "false"
+    restart: unless-stopped
+    depends_on: [auth-service]
+    environment:
+      PORT: "3100"
+      HOSTNAME: 0.0.0.0
+      AUTH_SERVICE_URL: http://auth-service:4001
+      ECOSYSTEM_PROXY_APPS: "false"
+      NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${NEXT_PUBLIC_TELEGRAM_BOT_USERNAME:-}
+      NEXT_PUBLIC_TELEGRAM_AUTH_DEV: "false"
+    networks: [internal]
+
+  bloggers:
+    build:
+      context: ../bloggers
+      args:
+        NEXT_PUBLIC_BASE_PATH: /bloggers
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_BASE_PATH: /bloggers
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      DATABASE_URL: file:/data/app/panel.sqlite
+      CATALOG_SERVICE_URL: http://catalog:4002
+    volumes:
+      - bloggers_data:/data/app
+    networks: [internal]
+
+  drops:
+    build:
+      context: ../drops/web
+      args:
+        NEXT_PUBLIC_BASE_PATH: /drops
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_BASE_PATH: /drops
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      DATABASE_URL: postgresql://drops:${DROPS_DB_PASSWORD:-drops}@postgres:5432/drops
+      CATALOG_SERVICE_URL: http://catalog:4002
+      MEDIA_SERVICE_URL: http://media:4003
+    networks: [internal]
+
+  production-scheduler:
+    build:
+      context: ../production-scheduler
+      args:
+        NEXT_PUBLIC_BASE_PATH: /scheduler
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      TZ: Europe/Moscow
+      NEXT_PUBLIC_BASE_PATH: /scheduler
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      DATABASE_URL: file:/data/app/production.db
+      UPLOADS_DIR: /data/app/uploads
+      APP_URL: ${PUBLIC_BASE_URL}/scheduler
+      TELEGRAM_BOT_TOKEN: ${SCHEDULER_TELEGRAM_BOT_TOKEN:-}
+      NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${SCHEDULER_TELEGRAM_BOT_USERNAME:-}
+    volumes:
+      - scheduler_data:/data/app
+    networks: [internal]
+
+  shop-scheduler:
+    build:
+      context: ../shop_scheduler
+      args:
+        NEXT_PUBLIC_BASE_PATH: /shop
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      TZ: Europe/Moscow
+      NEXT_PUBLIC_BASE_PATH: /shop
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      DATABASE_URL: file:/data/app/shop.db
+      UPLOADS_DIR: /data/app/uploads
+      APP_URL: ${PUBLIC_BASE_URL}/shop
+    volumes:
+      - shop_data:/data/app
+    networks: [internal]
+
+  nakleiki:
+    build:
+      context: ../nakleiki/production-scheduler
+      args:
+        NEXT_PUBLIC_BASE_PATH: /nakleiki
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      TZ: Europe/Moscow
+      NEXT_PUBLIC_BASE_PATH: /nakleiki
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      DATABASE_URL: file:/data/app/nakleiki.db
+      UPLOADS_DIR: /data/app/uploads
+      APP_URL: ${PUBLIC_BASE_URL}/nakleiki
+    volumes:
+      - nakleiki_data:/data/app
+    networks: [internal]
+
+  proizvodstvo:
+    build:
+      context: ../proizvodstvo
+      args:
+        NEXT_PUBLIC_BASE_PATH: /proizvodstvo
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_BASE_PATH: /proizvodstvo
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      CATALOG_SERVICE_URL: http://catalog:4002
+    volumes:
+      - proizvodstvo_data:/app/.data
+    networks: [internal]
+
+  proizvodstvo-zakazi:
+    build:
+      context: ../proizvodstvo_zakazi/web
+      args:
+        NEXT_PUBLIC_BASE_PATH: /zakazi
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_BASE_PATH: /zakazi
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      CATALOG_SERVICE_URL: http://catalog:4002
+    volumes:
+      - zakazi_data:/app/data
+    networks: [internal]
+
+  zarplaty:
+    build:
+      context: ../zarplaty
+      args:
+        NEXT_PUBLIC_BASE_PATH: /zarplaty
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_BASE_PATH: /zarplaty
+      ECOSYSTEM_PUBLIC_URL: ${PUBLIC_BASE_URL}
+      ECOSYSTEM_AUTH_ENABLED: "true"
+      DATABASE_URL: file:/data/app/salary.db
+    volumes:
+      - zarplaty_data:/data/app
+    networks: [internal]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - portal
+      - auth-service
+      - catalog
+      - media
+      - bloggers
+      - drops
+      - production-scheduler
+      - shop-scheduler
+      - nakleiki
+      - proizvodstvo
+      - proizvodstvo-zakazi
+      - zarplaty
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@cashercollection.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  pg_data:
+  media_data:
+  caddy_data:
+  caddy_config:
+  bloggers_data:
+  scheduler_data:
+  shop_data:
+  nakleiki_data:
+  proizvodstvo_data:
+  zakazi_data:
+  zarplaty_data:

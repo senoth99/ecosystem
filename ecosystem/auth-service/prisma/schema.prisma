@@ -1,0 +1,57 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ECOSYSTEM_DATABASE_URL")
+}
+
+model EcosystemApp {
+  slug        String   @id
+  title       String
+  description String?
+  path        String
+  sortOrder   Int      @default(0)
+  hasManage   Boolean  @default(true)
+  extraPerms  Json?
+  permissions AppPermission[]
+}
+
+model User {
+  id               String          @id @default(cuid())
+  telegramId       String          @unique
+  telegramUsername String?
+  displayName      String
+  photoUrl         String?
+  isSuperAdmin     Boolean         @default(false)
+  isActive         Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  permissions      AppPermission[]
+  browserChallenges BrowserLoginChallenge[]
+}
+
+model AppPermission {
+  id        String       @id @default(cuid())
+  userId    String
+  appSlug   String
+  enabled   Boolean      @default(false)
+  canView   Boolean      @default(false)
+  canManage Boolean      @default(false)
+  extras    Json?
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  app       EcosystemApp @relation(fields: [appSlug], references: [slug], onDelete: Cascade)
+
+  @@unique([userId, appSlug])
+}
+
+model BrowserLoginChallenge {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  expiresAt DateTime
+  consumed  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}

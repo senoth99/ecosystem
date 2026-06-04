@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Next.js
+web/.next/
+web/out/
+
+# Vite
+drops-app/dist/
+
+# Env (keep *.example)
+.env
+.env.*
+!.env.example
+
+# DB / local PocketBase
+**/prisma/*.db
+**/prisma/*.db-journal
+pb_data/
+
+*.swp
+*.swo
+*~
+
+# Tools / cache
+.turbo
+*.tsbuildinfo
+web/next-env.d.ts
+
+# PocketBase — скачайте с https://github.com/pocketbase/pocketbase/releases
+/pocketbase
+/.tools/pocketbase
+/pb.zip

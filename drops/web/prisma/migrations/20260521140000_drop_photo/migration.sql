@@ -1,0 +1,1 @@
+ALTER TABLE "drops" ADD COLUMN "photo" TEXT;

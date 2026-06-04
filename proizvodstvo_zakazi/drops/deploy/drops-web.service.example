@@ -1,0 +1,19 @@
+[Unit]
+Description=DROPS Next.js (production server)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/drops/web
+Environment=NODE_ENV=production
+Environment=PORT=3000
+# Переменные из .env подхватывает Next при старте из каталога web/
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
