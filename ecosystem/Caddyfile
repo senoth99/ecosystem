@@ -1,6 +1,7 @@
-# Reverse proxy + HTTPS (Let's Encrypt). DOMAIN и ACME_EMAIL — из .env
+# HTTPS только через Let's Encrypt (не ZeroSSL)
 {
 	email {$ACME_EMAIL}
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
 }
 
 {$DOMAIN} {
