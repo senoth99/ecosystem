@@ -46,7 +46,17 @@ export default async function AdminStickersPage() {
         take: 300
       })
     ]);
-    return { applications, dailyReports };
+    return {
+      applications: applications.map((a) => ({
+        ...a,
+        createdAt: a.createdAt.toISOString()
+      })),
+      dailyReports: dailyReports.map((d) => ({
+        ...d,
+        createdAt: d.createdAt.toISOString(),
+        reportDate: d.reportDate.toISOString()
+      }))
+    };
   });
 
   if (!wrapped.ok) return <ServiceUnavailable scope="admin/stickers" />;
