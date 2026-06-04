@@ -1,14 +1,17 @@
 # docker build --build-arg NEXT_PUBLIC_BASE_PATH=/scheduler -t scheduler .
 
-FROM node:22-alpine AS deps
+FROM node:22-alpine AS base
+RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories \
+    && apk update \
+    && apk add --no-cache openssl
 WORKDIR /app
-RUN apk add --no-cache openssl
+
+FROM base AS deps
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
 RUN npm ci --ignore-scripts
 
 FROM deps AS build
-WORKDIR /app
 COPY . .
 ARG NEXT_PUBLIC_BUILD_REF=unknown
 ARG NEXT_PUBLIC_BASE_PATH=
@@ -17,12 +20,10 @@ ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npx prisma generate && npm run build
 
-FROM node:22-alpine AS runtime
-WORKDIR /app
+FROM base AS runtime
 ENV NODE_ENV=production
 ENV TZ=Europe/Moscow
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN apk add --no-cache openssl
 COPY package.json package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next

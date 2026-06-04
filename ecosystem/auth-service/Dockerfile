@@ -1,6 +1,10 @@
-FROM node:22-alpine AS deps
+FROM node:22-alpine AS base
+RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories \
+    && apk update \
+    && apk add --no-cache openssl
 WORKDIR /app
-RUN apk add --no-cache openssl
+
+FROM base AS deps
 COPY package.json ./
 COPY prisma ./prisma
 RUN npm install --ignore-scripts
@@ -10,10 +14,8 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npx prisma generate && npm run build
 
-FROM node:22-alpine AS runtime
-WORKDIR /app
+FROM base AS runtime
 ENV NODE_ENV=production
-RUN apk add --no-cache openssl
 COPY package.json ./
 COPY prisma ./prisma
 COPY --from=build /app/node_modules ./node_modules
