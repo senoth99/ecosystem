@@ -1,9 +1,6 @@
 # Production: docker build --build-arg NEXT_PUBLIC_BASE_PATH=/bloggers -t bloggers .
-FROM node:20-alpine AS base
+FROM node:22-bookworm-slim AS base
 WORKDIR /app
-RUN sed -i 's|https://|http://|g' /etc/apk/repositories \
-    && apk update \
-    && apk add --no-cache openssl
 
 FROM base AS deps
 COPY package.json package-lock.json ./
@@ -20,7 +17,8 @@ RUN npx prisma generate && npm run build
 FROM base AS runner
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
+RUN groupadd --system --gid 1001 nodejs \
+    && useradd --system --uid 1001 --gid nodejs nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static

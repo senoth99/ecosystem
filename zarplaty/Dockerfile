@@ -1,7 +1,4 @@
-FROM node:22-alpine AS base
-RUN sed -i 's|https://|http://|g' /etc/apk/repositories \
-    && apk update \
-    && apk add --no-cache openssl
+FROM node:22-bookworm-slim AS base
 WORKDIR /app
 
 FROM base AS deps
@@ -23,7 +20,8 @@ RUN mkdir -p /out/public && \
 FROM base AS runner
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
+RUN groupadd --system --gid 1001 nodejs \
+    && useradd --system --uid 1001 --gid nodejs nextjs
 
 COPY --from=public-files /out/public ./public
 COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./

@@ -1,10 +1,6 @@
 # docker build --build-arg NEXT_PUBLIC_BASE_PATH=/scheduler -t scheduler .
 
-FROM node:22-alpine AS base
-# HTTP repos: this build host fails TLS to Alpine HTTPS mirrors (apk: unspecified error).
-RUN sed -i 's|https://|http://|g' /etc/apk/repositories \
-    && apk update \
-    && apk add --no-cache openssl
+FROM node:22-bookworm-slim AS base
 WORKDIR /app
 
 FROM base AS deps

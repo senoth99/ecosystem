@@ -1,4 +1,4 @@
-FROM node:22-alpine AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json ./
 RUN npm install
@@ -10,7 +10,7 @@ ARG NEXT_PUBLIC_TELEGRAM_AUTH_DEV=false
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:22-alpine AS runtime
+FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/.next/standalone ./
