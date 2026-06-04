@@ -1,7 +1,8 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci
+RUN apk add --no-cache openssl libc6-compat
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
 
 FROM deps AS build
 COPY . .
