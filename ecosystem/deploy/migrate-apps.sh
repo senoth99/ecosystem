@@ -19,14 +19,14 @@ COMPOSE_DEPLOY=(docker compose -f docker-compose.prod.yml --env-file .env --prof
 source "$(dirname "$0")/lib-postgres.sh"
 sync_drops_postgres_password
 
-run() {
-  echo "==> $1"
-  timeout 180 "${COMPOSE_DEPLOY[@]}" run --rm --no-TTY "$1"
-}
+echo "==> drops-migrate"
+"${COMPOSE_DEPLOY[@]}" run --rm --no-TTY drops-migrate
 
-run drops-migrate
-run bloggers-migrate || true
-run zarplaty-migrate || true
+echo "==> bloggers-migrate"
+"${COMPOSE_DEPLOY[@]}" run --rm --no-TTY bloggers-migrate || true
+
+echo "==> zarplaty-migrate"
+"${COMPOSE_DEPLOY[@]}" run --rm --no-TTY zarplaty-migrate || true
 
 docker compose -f docker-compose.prod.yml --env-file .env restart drops bloggers zarplaty
 echo "Готово."

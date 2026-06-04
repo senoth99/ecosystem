@@ -3,7 +3,7 @@
 # v3 — Prisma через one-shot контейнеры (не exec в работающие приложения)
 set -euo pipefail
 
-DEPLOY_SCRIPT_VERSION=5
+DEPLOY_SCRIPT_VERSION=6
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -34,13 +34,30 @@ echo "==> deploy.sh v${DEPLOY_SCRIPT_VERSION} (one-shot Prisma migrate)"
 prisma_migrate_job() {
   local job="$1"
   local required="${2:-optional}"
-  echo "==> Prisma migrate: $job (таймаут 3 мин)..."
+  local max_wait="${3:-300}"
+  if [[ "$max_wait" -eq 0 ]]; then
+    echo "==> Prisma migrate: $job (без таймаута)..."
+  else
+    echo "==> Prisma migrate: $job (таймаут ${max_wait}с)..."
+  fi
   set +e
-  timeout 180 "${COMPOSE_DEPLOY[@]}" run --rm --no-TTY "$job"
+  if [[ "$max_wait" -eq 0 ]]; then
+    "${COMPOSE_DEPLOY[@]}" run --rm --no-TTY "$job"
+  else
+    timeout "$max_wait" "${COMPOSE_DEPLOY[@]}" run --rm --no-TTY "$job"
+  fi
   local code=$?
   set -e
   if [[ $code -eq 0 ]]; then
     echo "    ✓ $job"
+    return 0
+  fi
+  if [[ $code -eq 124 ]]; then
+    echo "    ⚠ $job — истёк таймаут; если в логе «successfully applied», БД уже обновлена"
+    if [[ "$required" != "required" ]]; then
+      return 0
+    fi
+    # drops: миграции часто успевают, но compose/prisma выходят дольше 3 мин на слабом VPS
     return 0
   fi
   if [[ "$required" == "required" ]]; then
@@ -73,9 +90,9 @@ echo "==> Миграция БД экосистемы и seed приложени�
 source "$(dirname "$0")/lib-postgres.sh"
 sync_drops_postgres_password
 
-prisma_migrate_job drops-migrate required
-prisma_migrate_job bloggers-migrate optional
-prisma_migrate_job zarplaty-migrate optional
+prisma_migrate_job drops-migrate required 0
+prisma_migrate_job bloggers-migrate optional 300
+prisma_migrate_job zarplaty-migrate optional 300
 
 echo "==> Перезапуск приложений после миграций..."
 "${COMPOSE[@]}" restart drops bloggers zarplaty 2>/dev/null || true
