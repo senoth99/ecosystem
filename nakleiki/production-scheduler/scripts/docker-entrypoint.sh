@@ -1,12 +1,19 @@
 #!/bin/sh
-# Перед первым запуском применяем миграции (SQLite на persistent volume или новый файл).
 set -eu
 cd /app || exit 1
 url="${DATABASE_URL:-}"
 case "$url" in
 file:*|"file:"*)
-  echo "[entrypoint] SQLite — prisma migrate (с baseline при P3005)"
-  sh /app/scripts/prisma-sqlite-migrate.sh || exit 1
+  db_path="${url#file:}"
+  mkdir -p "$(dirname "$db_path")"
+  if [ -n "${UPLOADS_DIR:-}" ]; then
+    mkdir -p "$UPLOADS_DIR"
+  fi
+  echo "[entrypoint] SQLite — prisma migrate (fallback: db push)"
+  if ! sh /app/scripts/prisma-sqlite-migrate.sh; then
+    echo "[entrypoint] migrate failed — prisma db push"
+    npx prisma db push --skip-generate
+  fi
   ;;
 esac
 exec "$@"
