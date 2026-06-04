@@ -1,10 +1,9 @@
-# HTTPS только через Let's Encrypt (не ZeroSSL)
+# HTTP-only mode — TLS handled externally (Cloudflare or later Let's Encrypt fix)
 {
-	email {$ACME_EMAIL}
-	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	auto_https off
 }
 
-{$DOMAIN} {
+:80 {
 	encode gzip zstd
 
 	handle_path /api/eco/* {
@@ -54,7 +53,6 @@
 	}
 
 	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
 	}
