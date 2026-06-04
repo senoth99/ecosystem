@@ -91,17 +91,40 @@ curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
 
 ## 5. TLS / Caddy
 
-Если в логах `Timeout during connect` или `challenge failed`, а локально `curl http://127.0.0.1` отвечает:
+Если в логах Caddy **`Timeout during connect (likely firewall problem)`** для `147.45.x.x` — Let's Encrypt **не может зайти на порт 80** с интернета. Пока это не исправлено, `https://DOMAIN` не откроется.
+
+### Обязательно: файрвол Timeweb
+
+1. Панель **Timeweb Cloud** → **Облачные серверы** → ваш VPS (`msk-1-vm-…`).
+2. Раздел **Сеть / Firewall / Группы безопасности** (название может отличаться).
+3. Добавьте **входящие** правила:
+   - **TCP 80** с `0.0.0.0/0` (для ACME и редиректа)
+   - **TCP 443** с `0.0.0.0/0` (HTTPS)
+4. На сервере (опционально): `chmod +x deploy/open-ports.sh && sudo ./deploy/open-ports.sh`
+
+Проверка **с ноутбука** (должен быть ответ, не таймаут):
+
+```bash
+curl -sI --connect-timeout 5 http://eco.cashercollection.com/ | head -3
+```
+
+### Сброс сертификата
+
+Если в логах **`acme.zerossl.com`** — старый кэш. На сервере:
+
+```bash
+chmod +x deploy/fix-tls.sh
+./deploy/fix-tls.sh
+```
+
+Дальше по старой инструкции:
 
 1. Откройте **80/tcp и 443/tcp** в файрволе панели VPS (не только `ufw` на сервере).
 2. В `Caddyfile` должен быть `acme_ca https://acme-v02.api.letsencrypt.org/directory` (не staging). Сбросьте старые ACME-данные:
 
 ```bash
-docker compose -f docker-compose.prod.yml stop caddy
-docker compose -f docker-compose.prod.yml run --rm -v casher-ecosystem_caddy_data:/data alpine \
-  sh -c 'rm -rf /data/caddy/acme/* /data/caddy/certificates/* /data/caddy/locks/*'
-docker compose -f docker-compose.prod.yml exec caddy rm -f /config/caddy/autosave.json 2>/dev/null || true
-docker compose -f docker-compose.prod.yml up -d caddy
+chmod +x deploy/fix-tls.sh
+./deploy/fix-tls.sh
 ```
 
 Если в логах `acme-staging` или `zerossl` — обновите `Caddyfile` и выполните команды выше.
