@@ -1,6 +1,10 @@
 # Production: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 name: casher-ecosystem
 
+# Some VPS block outbound HTTPS from Docker bridge; build steps use host routing.
+x-build: &build
+  network: host
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -20,7 +24,9 @@ services:
     networks: [internal]
 
   auth-service:
-    build: ./auth-service
+    build:
+      <<: *build
+      context: ./auth-service
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -39,7 +45,9 @@ services:
     networks: [internal]
 
   catalog:
-    build: ./services/catalog
+    build:
+      <<: *build
+      context: ./services/catalog
     restart: unless-stopped
     environment:
       PORT: "4002"
@@ -47,7 +55,9 @@ services:
     networks: [internal]
 
   media:
-    build: ./services/media
+    build:
+      <<: *build
+      context: ./services/media
     restart: unless-stopped
     volumes:
       - media_data:/data/media
@@ -59,6 +69,7 @@ services:
 
   portal:
     build:
+      <<: *build
       context: ./portal
       args:
         NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${NEXT_PUBLIC_TELEGRAM_BOT_USERNAME:-}
@@ -76,6 +87,7 @@ services:
 
   bloggers:
     build:
+      <<: *build
       context: ../bloggers
       args:
         NEXT_PUBLIC_BASE_PATH: /bloggers
@@ -95,6 +107,7 @@ services:
 
   drops:
     build:
+      <<: *build
       context: ../drops/web
       args:
         NEXT_PUBLIC_BASE_PATH: /drops
@@ -115,6 +128,7 @@ services:
 
   production-scheduler:
     build:
+      <<: *build
       context: ../production-scheduler
       args:
         NEXT_PUBLIC_BASE_PATH: /scheduler
@@ -137,6 +151,7 @@ services:
 
   shop-scheduler:
     build:
+      <<: *build
       context: ../shop_scheduler
       args:
         NEXT_PUBLIC_BASE_PATH: /shop
@@ -157,6 +172,7 @@ services:
 
   nakleiki:
     build:
+      <<: *build
       context: ../nakleiki/production-scheduler
       args:
         NEXT_PUBLIC_BASE_PATH: /nakleiki
@@ -177,6 +193,7 @@ services:
 
   proizvodstvo:
     build:
+      <<: *build
       context: ../proizvodstvo
       args:
         NEXT_PUBLIC_BASE_PATH: /proizvodstvo
@@ -195,6 +212,7 @@ services:
 
   proizvodstvo-zakazi:
     build:
+      <<: *build
       context: ../proizvodstvo_zakazi/web
       args:
         NEXT_PUBLIC_BASE_PATH: /zakazi
@@ -213,6 +231,7 @@ services:
 
   zarplaty:
     build:
+      <<: *build
       context: ../zarplaty
       args:
         NEXT_PUBLIC_BASE_PATH: /zarplaty

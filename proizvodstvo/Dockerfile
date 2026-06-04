@@ -2,20 +2,17 @@
 
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-RUN corepack enable
-COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* .npmrc* ./
-RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile --ignore-scripts
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
 
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
-RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG NEXT_PUBLIC_BASE_PATH=
 ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build
+RUN npm run build
 
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
