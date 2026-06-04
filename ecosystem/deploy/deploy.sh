@@ -3,7 +3,7 @@
 # v3 — Prisma через one-shot контейнеры (не exec в работающие приложения)
 set -euo pipefail
 
-DEPLOY_SCRIPT_VERSION=4
+DEPLOY_SCRIPT_VERSION=5
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
