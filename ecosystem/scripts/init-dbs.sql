@@ -1,4 +1,2 @@
--- Пароль пользователя drops должен совпадать с DROPS_DB_PASSWORD в .env (по умолчанию drops)
-CREATE USER drops WITH PASSWORD 'drops';
-CREATE DATABASE drops OWNER drops;
-GRANT ALL PRIVILEGES ON DATABASE drops TO drops;
+-- Устарело: используйте init-dbs.sh (пароль из DROPS_DB_PASSWORD).
+-- Оставлено для справки. При первом запуске Postgres монтирует init-dbs.sh.

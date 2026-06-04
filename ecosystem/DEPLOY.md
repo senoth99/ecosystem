@@ -59,7 +59,7 @@ nano .env
 | `COOKIE_DOMAIN` | `.cashercollection.com` или ваш домен |
 | `COOKIE_SECURE` | `true` |
 
-`DROPS_DB_PASSWORD` по умолчанию `drops` — при смене пароля обновите также `ecosystem/scripts/init-dbs.sql` **до первого запуска** Postgres.
+`DROPS_DB_PASSWORD` в `.env` — при каждом деплое скрипт выставляет этот пароль пользователю Postgres `drops` (`ALTER USER`). Если раньше в БД остался пароль `drops`, а в `.env` другой — без этого шага будет `P1000 Authentication failed`.
 
 ## 3. Деплой
 
@@ -70,7 +70,7 @@ chmod +x deploy/deploy.sh deploy/setup-server.sh
 
 Скрипт соберёт образы, поднимет контейнеры, применит схему БД и seed приложений.
 
-В начале лога должно быть: **`deploy.sh v3 (one-shot Prisma migrate)`**.  
+В начале лога должно быть: **`deploy.sh v4`** (или новее).  
 Если видите старую строку `Prisma/SQLite в приложениях` — на сервере не обновлён репозиторий: `git pull` и снова `./deploy/deploy.sh`.
 
 Только миграции приложений (без полного деплоя):

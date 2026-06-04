@@ -3,7 +3,7 @@
 # v3 — Prisma через one-shot контейнеры (не exec в работающие приложения)
 set -euo pipefail
 
-DEPLOY_SCRIPT_VERSION=3
+DEPLOY_SCRIPT_VERSION=4
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -68,6 +68,10 @@ done
 echo "==> Миграция БД экосистемы и seed приложений..."
 "${COMPOSE[@]}" exec -T auth-service \
   sh -c "npx prisma db push && npx tsx prisma/seed.ts"
+
+# shellcheck source=lib-postgres.sh
+source "$(dirname "$0")/lib-postgres.sh"
+sync_drops_postgres_password
 
 prisma_migrate_job drops-migrate required
 prisma_migrate_job bloggers-migrate optional

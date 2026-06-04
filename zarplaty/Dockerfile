@@ -18,7 +18,7 @@ RUN npx prisma generate && npm run build
 
 FROM build AS migrator
 WORKDIR /app
-CMD ["sh", "-c", "db=\"${DATABASE_URL#file:}\"; mkdir -p \"$(dirname \"$db\")\"; ./node_modules/.bin/prisma db push --skip-generate"]
+CMD ["sh", "-c", "db=\"${DATABASE_URL#file:}\"; mkdir -p \"$(dirname \"$db\")\"; ./node_modules/.bin/prisma db push"]
 
 FROM build AS public-files
 RUN mkdir -p /out/public && \

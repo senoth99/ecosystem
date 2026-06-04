@@ -18,7 +18,7 @@ RUN npx prisma generate && npm run build
 # One-shot migrate job (deploy.sh: docker compose run drops-migrate)
 FROM build AS migrator
 WORKDIR /app
-CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy --skip-generate || ./node_modules/.bin/prisma db push --skip-generate"]
+CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy || ./node_modules/.bin/prisma db push"]
 
 FROM base AS runner
 ENV NODE_ENV=production
