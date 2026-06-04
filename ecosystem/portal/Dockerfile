@@ -7,6 +7,10 @@ FROM deps AS build
 COPY . .
 ARG NEXT_PUBLIC_TELEGRAM_BOT_USERNAME=
 ARG NEXT_PUBLIC_TELEGRAM_AUTH_DEV=false
+# Rewrites в next.config вшиваются при build — runtime ENV не подхватывается.
+ARG AUTH_SERVICE_URL=http://auth-service:4001
+ENV AUTH_SERVICE_URL=$AUTH_SERVICE_URL
+ENV ECOSYSTEM_PROXY_APPS=false
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

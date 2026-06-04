@@ -74,6 +74,7 @@ services:
       args:
         NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${NEXT_PUBLIC_TELEGRAM_BOT_USERNAME:-}
         NEXT_PUBLIC_TELEGRAM_AUTH_DEV: "false"
+        AUTH_SERVICE_URL: http://auth-service:4001
     restart: unless-stopped
     depends_on: [auth-service]
     environment:
