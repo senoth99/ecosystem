@@ -5,6 +5,7 @@ import {
   clearSessionCookieHeader,
   cookieContextFromRequest,
   parseCookie,
+  sessionCookieHeader,
   signSession,
   verifySession
 } from "./session.js";
