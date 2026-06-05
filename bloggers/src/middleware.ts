@@ -13,10 +13,13 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
   if (!ecosystemAuthEnabled()) return NextResponse.next();
+  const eco = getEcoTokenFromRequest(req.headers.get("cookie") ?? undefined);
   if (pathname.startsWith("/login")) {
+    if (eco && (await verifyEcoSession(eco))) {
+      return NextResponse.redirect(new URL(appBasePath() || "/", req.url));
+    }
     return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}/integrations`), req.url));
   }
-  const eco = getEcoTokenFromRequest(req.headers.get("cookie") ?? undefined);
   if (!eco) {
     return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), req.url));
   }

@@ -8,6 +8,7 @@ import { UserRole, type UserRole as UserRoleValue } from "./enums";
 import { isNextHttpAccessFallbackError, isNextRedirectError } from "./dbBoundary";
 import { sessionSecretBytes } from "./sessionSecret";
 import { sessionCookieSecure } from "./sessionCookie";
+import { hasEcoSession, resolveUserFromEcoSession } from "./eco-auth-bridge";
 
 const COOKIE_NAME = "ps_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14;
@@ -201,17 +202,18 @@ export async function refreshSessionCookieForUserId(userId: string) {
 export async function getCurrentUser() {
   try {
     const v = await verifySessionCookie();
-    if (v.kind !== "ok") return null;
-    const userId = v.payload.userId as string | undefined;
-    if (!userId) return null;
-
-    try {
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      if (!user || !user.isActive) return null;
-      return user;
-    } catch {
-      return null;
+    if (v.kind === "ok") {
+      const userId = v.payload.userId as string | undefined;
+      if (userId) {
+        try {
+          const user = await prisma.user.findUnique({ where: { id: userId } });
+          if (user?.isActive) return user;
+        } catch {
+          /* fall through to eco */
+        }
+      }
     }
+    return resolveUserFromEcoSession();
   } catch (e) {
     console.error("[getCurrentUser]", e instanceof Error ? e.message : e);
     return null;
@@ -222,7 +224,7 @@ export async function requireRole(roles: UserRoleValue[]) {
   try {
     const user = await getCurrentUser();
     if (!user) redirect("/telegram/login");
-    if (!user.profileCompleted) redirect("/welcome");
+    if (!user.profileCompleted && !(await hasEcoSession())) redirect("/welcome");
     const role = Object.values(UserRole).includes(user.role as UserRoleValue)
       ? (user.role as UserRoleValue)
       : UserRole.EMPLOYEE;
@@ -239,7 +241,7 @@ export async function requireAuth() {
   try {
     const user = await getCurrentUser();
     if (!user) redirect("/telegram/login");
-    if (!user.profileCompleted) redirect("/welcome");
+    if (!user.profileCompleted && !(await hasEcoSession())) redirect("/welcome");
     return user;
   } catch (e) {
     if (isNextRedirectError(e) || isNextHttpAccessFallbackError(e)) throw e;

@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -9,17 +9,18 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const { hydrated, isAuthenticated } = useAuth();
   const pathname = usePathname() ?? "";
   const searchParams = useSearchParams();
-  const router = useRouter();
-
   useEffect(() => {
     if (!hydrated) return;
     if (pathname.startsWith("/login")) return;
     if (!isAuthenticated) {
       const q = searchParams?.toString();
       const next = q ? `${pathname}?${q}` : pathname;
-      router.replace(`/login?next=${encodeURIComponent(next || "/integrations")}`);
+      const base = process.env.NEXT_PUBLIC_BASE_PATH?.replace(/\/$/, "") ?? "";
+      window.location.assign(
+        `/login?${new URLSearchParams({ next: `${base}${next || "/integrations"}` }).toString()}`,
+      );
     }
-  }, [hydrated, isAuthenticated, pathname, router, searchParams]);
+  }, [hydrated, isAuthenticated, pathname, searchParams]);
 
   if (!hydrated) {
     return (

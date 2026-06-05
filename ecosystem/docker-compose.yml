@@ -65,6 +65,7 @@ services:
     environment:
       PORT: "3100"
       AUTH_SERVICE_URL: http://auth-service:4001
+      SESSION_SECRET: ${SESSION_SECRET:-dev-secret-change-in-production-32chars}
       NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${NEXT_PUBLIC_TELEGRAM_BOT_USERNAME:-}
       NEXT_PUBLIC_TELEGRAM_AUTH_DEV: ${NEXT_PUBLIC_TELEGRAM_AUTH_DEV:-true}
 

@@ -1,12 +1,11 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { AuthShell } from "@/components/AuthShell";
 import { PasswordLogin } from "@/components/PasswordLogin";
 
 function LoginInner() {
-  const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") ?? "/";
 
@@ -14,8 +13,9 @@ function LoginInner() {
     <AuthShell title="Casher Ecosystem" description="Вход по паролю для доступа ко всем приложениям">
       <PasswordLogin
         onSuccess={() => {
-          router.replace(next.startsWith("/") ? next : "/");
-          router.refresh();
+          const dest = next.startsWith("/") ? next : "/";
+          // Полная перезагрузка — cookie eco_session гарантированно уходит в следующий запрос (Safari, переход в /bloggers/…).
+          window.location.assign(dest);
         }}
       />
     </AuthShell>
