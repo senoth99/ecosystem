@@ -154,6 +154,26 @@ cd ecosystem
 ./deploy/deploy.sh
 ```
 
+## Сборка: timeout Docker Hub
+
+Если при `deploy.sh` ошибка `docker/dockerfile:1.7: i/o timeout` или `registry-1.docker.io` по IPv6 — на VPS нет стабильного выхода в Docker Hub.
+
+1. Обновите репозиторий (`git pull`) — лишняя директива `syntax=docker/dockerfile` убрана.
+2. На сервере отключите IPv6 для Docker (если таймауты повторяются):
+
+```bash
+sudo mkdir -p /etc/docker
+printf '%s\n' '{ "ipv6": false }' | sudo tee /etc/docker/daemon.json
+sudo systemctl restart docker
+```
+
+3. Повторите `./deploy/deploy.sh`. Только изменённые сервисы:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env build portal auth-service
+docker compose -f docker-compose.prod.yml --env-file .env up -d portal auth-service
+```
+
 ## Полезные команды
 
 ```bash
