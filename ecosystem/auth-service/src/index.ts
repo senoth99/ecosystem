@@ -3,8 +3,8 @@ import cors from "cors";
 import { prisma } from "./prisma.js";
 import {
   clearSessionCookieHeader,
+  cookieContextFromRequest,
   parseCookie,
-  sessionCookieHeader,
   signSession,
   verifySession
 } from "./session.js";
@@ -32,11 +32,7 @@ app.use(
 app.use(express.json());
 
 function setSession(res: express.Response, token: string, req?: express.Request) {
-  const proto =
-    typeof req?.headers["x-forwarded-proto"] === "string"
-      ? req.headers["x-forwarded-proto"].split(",")[0]?.trim()
-      : undefined;
-  res.setHeader("Set-Cookie", sessionCookieHeader(token, proto));
+  res.setHeader("Set-Cookie", sessionCookieHeader(token, cookieContextFromRequest(req)));
 }
 
 app.get("/health", (_req, res) => {
@@ -59,8 +55,8 @@ app.get("/me", async (req, res) => {
   res.json({ user: session, apps });
 });
 
-app.post("/auth/logout", (_req, res) => {
-  res.setHeader("Set-Cookie", clearSessionCookieHeader());
+app.post("/auth/logout", (req, res) => {
+  res.setHeader("Set-Cookie", clearSessionCookieHeader(cookieContextFromRequest(req)));
   res.json({ ok: true });
 });
 
