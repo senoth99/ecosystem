@@ -20,11 +20,17 @@
 
 	@portal path / /login /login/* /admin /admin/*
 	handle @portal {
-		reverse_proxy portal:3100
+		reverse_proxy portal:3100 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
 	}
 
 	handle /_next/* {
-		reverse_proxy portal:3100
+		reverse_proxy portal:3100 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
 	}
 
 	handle /bloggers* {

@@ -31,8 +31,12 @@ app.use(
 );
 app.use(express.json());
 
-function setSession(res: express.Response, token: string) {
-  res.setHeader("Set-Cookie", sessionCookieHeader(token));
+function setSession(res: express.Response, token: string, req?: express.Request) {
+  const proto =
+    typeof req?.headers["x-forwarded-proto"] === "string"
+      ? req.headers["x-forwarded-proto"].split(",")[0]?.trim()
+      : undefined;
+  res.setHeader("Set-Cookie", sessionCookieHeader(token, proto));
 }
 
 app.get("/health", (_req, res) => {
@@ -70,7 +74,7 @@ app.post("/auth/telegram", async (req, res) => {
   }
   const tg = parseUserFromInitData(initData);
   if (!tg) return res.status(400).json({ error: "Invalid user" });
-  return finishTelegramLogin(res, tg);
+  return finishTelegramLogin(req, res, tg);
 });
 
 app.post("/auth/telegram/dev", async (req, res) => {
@@ -84,7 +88,7 @@ app.post("/auth/telegram/dev", async (req, res) => {
     first_name: "Dev",
     last_name: "User"
   };
-  return finishTelegramLogin(res, tg);
+  return finishTelegramLogin(req, res, tg);
 });
 
 app.post("/auth/password", async (req, res) => {
@@ -102,10 +106,10 @@ app.post("/auth/password", async (req, res) => {
     first_name: "Admin",
     last_name: ""
   };
-  return finishTelegramLogin(res, tg);
+  return finishTelegramLogin(req, res, tg);
 });
 
-async function finishTelegramLogin(res: express.Response, tg: TgUser) {
+async function finishTelegramLogin(req: express.Request, res: express.Response, tg: TgUser) {
   const user = await upsertFromTelegram(tg);
   if (!(await canLogin(user.id))) {
     return res.status(403).json({
@@ -114,7 +118,7 @@ async function finishTelegramLogin(res: express.Response, tg: TgUser) {
     });
   }
   const token = await signSession(toSession(user));
-  setSession(res, token);
+  setSession(res, token, req);
   const apps = await getUserApps(user.id, user.isSuperAdmin);
   res.json({
     ok: true,
@@ -159,7 +163,7 @@ app.post("/auth/browser/complete", async (req, res) => {
     return res.status(403).json({ error: "Access denied", code: "ACCESS_DENIED" });
   }
   const jwt = await signSession(toSession(user));
-  setSession(res, jwt);
+  setSession(res, jwt, req);
   res.json({ ok: true, user: toSession(user) });
 });
 

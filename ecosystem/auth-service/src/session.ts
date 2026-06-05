@@ -48,8 +48,8 @@ export function parseCookie(header: string | undefined): string | null {
   return null;
 }
 
-export function sessionCookieHeader(token: string): string {
-  const opts = cookieOptions();
+export function sessionCookieHeader(token: string, forwardedProto?: string): string {
+  const opts = cookieOptions(forwardedProto);
   const parts = [
     `${COOKIE_NAME}=${encodeURIComponent(token)}`,
     `Path=${opts.path}`,
@@ -62,9 +62,12 @@ export function sessionCookieHeader(token: string): string {
   return parts.join("; ");
 }
 
-function cookieOptions() {
+export function cookieOptions(forwardedProtoHeader?: string) {
   const domain = process.env.COOKIE_DOMAIN?.trim();
-  const secure = process.env.COOKIE_SECURE === "true";
+  let secure: boolean;
+  if (forwardedProtoHeader === "http") secure = false;
+  else if (forwardedProtoHeader === "https") secure = true;
+  else secure = process.env.COOKIE_SECURE === "true";
   return {
     path: "/",
     maxAge: SESSION_TTL_SEC,
@@ -74,8 +77,8 @@ function cookieOptions() {
   };
 }
 
-export function clearSessionCookieHeader(): string {
-  const opts = cookieOptions();
+export function clearSessionCookieHeader(forwardedProtoHeader?: string): string {
+  const opts = cookieOptions(forwardedProtoHeader);
   const parts = [
     `${COOKIE_NAME}=`,
     `Path=${opts.path}`,
