@@ -12,7 +12,7 @@ const PUBLIC_PATHS = ["/access-denied"];
 
 function redirectLogin(req: NextRequest): NextResponse {
   const next = `${appBasePath()}${req.nextUrl.pathname}${req.nextUrl.search}`;
-  return NextResponse.redirect(ecosystemLoginUrl(next));
+  return NextResponse.redirect(new URL(ecosystemLoginUrl(next), req.url));
 }
 
 export async function middleware(req: NextRequest): Promise<NextResponse> {

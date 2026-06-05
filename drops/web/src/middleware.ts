@@ -34,19 +34,15 @@ export async function middleware(request: NextRequest) {
     if (eco && (await verifyEcoSession(eco))) {
       return NextResponse.redirect(new URL(appBasePath() || "/", request.url));
     }
-    return NextResponse.redirect(
-      ecosystemLoginUrl(`${appBasePath()}/`)
-    );
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}/`), request.url));
   }
 
   if (!eco) {
-    return NextResponse.redirect(
-      ecosystemLoginUrl(`${appBasePath()}${pathname}`)
-    );
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), request.url));
   }
   const session = await verifyEcoSession(eco);
   if (!session) {
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}${pathname}`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), request.url));
   }
   return NextResponse.next();
 }

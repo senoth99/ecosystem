@@ -29,7 +29,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (pathname === "/login") {
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}/employees`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}/employees`), request.url));
   }
 
   const eco = getEcoTokenFromRequest(request.headers.get("cookie") ?? undefined);
@@ -37,11 +37,11 @@ export async function middleware(request: NextRequest) {
     if (pathname.startsWith("/api")) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}${pathname}`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), request.url));
   }
   const session = await verifyEcoSession(eco);
   if (!session) {
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}${pathname}`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), request.url));
   }
   return NextResponse.next();
 }

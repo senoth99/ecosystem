@@ -42,8 +42,6 @@ export function getEcoTokenFromCookie(cookieHeader: string | undefined): string 
 }
 
 export function ecosystemLoginUrl(nextPath?: string): string {
-  const base = process.env.ECOSYSTEM_PUBLIC_URL?.trim() || process.env.PUBLIC_BASE_URL?.trim() || "/";
-  const url = new URL("/login", base.endsWith("/") ? base : `${base}/`);
-  if (nextPath) url.searchParams.set("next", nextPath);
-  return url.toString();
+  if (!nextPath?.trim()) return "/login";
+  return `/login?${new URLSearchParams({ next: nextPath }).toString()}`;
 }

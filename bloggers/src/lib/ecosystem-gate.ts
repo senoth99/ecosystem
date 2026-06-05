@@ -50,14 +50,10 @@ export function getEcoTokenFromRequest(cookieHeader: string | undefined): string
   return null;
 }
 
+/** Единый вход портала на том же хосте (домен или IP). */
 export function ecosystemLoginUrl(nextPath?: string): string {
-  const base = (process.env.ECOSYSTEM_PUBLIC_URL ?? process.env.PUBLIC_BASE_URL ?? "http://localhost").replace(
-    /\/$/,
-    ""
-  );
-  const url = new URL("/login", `${base}/`);
-  if (nextPath) url.searchParams.set("next", nextPath);
-  return url.toString();
+  if (!nextPath?.trim()) return "/login";
+  return `/login?${new URLSearchParams({ next: nextPath }).toString()}`;
 }
 
 export function appBasePath(): string {

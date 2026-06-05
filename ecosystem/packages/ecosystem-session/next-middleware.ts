@@ -12,8 +12,7 @@ export type EcosystemGateOptions = {
 
 function loginRedirect(req: NextRequest, basePath: string): NextResponse {
   const next = `${basePath}${req.nextUrl.pathname}${req.nextUrl.search}`;
-  const url = ecosystemLoginUrl(next);
-  return NextResponse.redirect(url);
+  return NextResponse.redirect(new URL(ecosystemLoginUrl(next), req.url));
 }
 
 export function createEcosystemMiddleware(opts: EcosystemGateOptions) {

@@ -14,15 +14,15 @@ export async function middleware(req: NextRequest) {
   }
   if (!ecosystemAuthEnabled()) return NextResponse.next();
   if (pathname.startsWith("/login")) {
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}/integrations`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}/integrations`), req.url));
   }
   const eco = getEcoTokenFromRequest(req.headers.get("cookie") ?? undefined);
   if (!eco) {
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}${pathname}`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), req.url));
   }
   const session = await verifyEcoSession(eco);
   if (!session) {
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}${pathname}`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), req.url));
   }
   return NextResponse.next();
 }

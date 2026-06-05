@@ -18,11 +18,11 @@ export async function middleware(req: NextRequest) {
     if (pathname.startsWith("/api")) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}${pathname}`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), req.url));
   }
   const session = await verifyEcoSession(eco);
   if (!session) {
-    return NextResponse.redirect(ecosystemLoginUrl(`${appBasePath()}${pathname}`));
+    return NextResponse.redirect(new URL(ecosystemLoginUrl(`${appBasePath()}${pathname}`), req.url));
   }
   return NextResponse.next();
 }
