@@ -22,7 +22,7 @@ set -a
 source .env
 set +a
 
-for var in DOMAIN SESSION_SECRET POSTGRES_PASSWORD PUBLIC_BASE_URL TELEGRAM_BOT_TOKEN; do
+for var in DOMAIN SESSION_SECRET POSTGRES_PASSWORD PUBLIC_BASE_URL APP_PASSWORD; do
   if [[ -z "${!var:-}" || "${!var}" == CHANGE_ME* ]]; then
     echo "Заполните переменную: $var"
     exit 1

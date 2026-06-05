@@ -53,7 +53,8 @@ nano .env
 | `PUBLIC_BASE_URL` | `https://eco.cashercollection.com` |
 | `SESSION_SECRET` | `openssl rand -hex 32` |
 | `POSTGRES_PASSWORD` | сильный пароль |
-| `TELEGRAM_BOT_TOKEN` | от @BotFather |
+| `APP_PASSWORD` | пароль входа в портал (временно вместо Telegram) |
+| `TELEGRAM_BOT_TOKEN` | от @BotFather (опционально) |
 | `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` | имя бота без @ |
 | `TELEGRAM_WEBHOOK_SECRET` | случайная строка |
 | `COOKIE_DOMAIN` | `.cashercollection.com` или ваш домен |

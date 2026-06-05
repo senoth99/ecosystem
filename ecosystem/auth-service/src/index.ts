@@ -87,6 +87,24 @@ app.post("/auth/telegram/dev", async (req, res) => {
   return finishTelegramLogin(res, tg);
 });
 
+app.post("/auth/password", async (req, res) => {
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const expected =
+    typeof process.env.APP_PASSWORD === "string" && process.env.APP_PASSWORD.trim() !== ""
+      ? process.env.APP_PASSWORD.trim()
+      : "";
+  if (!expected) return res.status(503).json({ error: "Вход по паролю не настроен" });
+  if (password.trim() !== expected) return res.status(401).json({ error: "Неверный пароль" });
+  const adminUsername = superadminUsernames().values().next().value ?? "contact_voropaev";
+  const tg: TgUser = {
+    id: 900_001,
+    username: adminUsername,
+    first_name: "Admin",
+    last_name: ""
+  };
+  return finishTelegramLogin(res, tg);
+});
+
 async function finishTelegramLogin(res: express.Response, tg: TgUser) {
   const user = await upsertFromTelegram(tg);
   if (!(await canLogin(user.id))) {
