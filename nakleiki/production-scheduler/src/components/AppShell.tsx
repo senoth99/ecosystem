@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SquarePen } from "lucide-react";
 import { BottomNav } from "@/components/BottomNav";
+import { EcosystemBackButton } from "@/components/EcosystemBackButton";
 import { NotificationBell } from "@/components/NotificationBell";
 import { SwipePageSwitch } from "@/components/SwipePageSwitch";
 import { cn } from "@/lib/utils";
@@ -63,6 +64,7 @@ export function AppShell({
         <SwipePageSwitch>{children}</SwipePageSwitch>
       </main>
       {!hideAppChrome ? <BottomNav /> : null}
+      {!hideAppChrome ? <EcosystemBackButton aboveBottomNav /> : null}
     </>
   );
 }

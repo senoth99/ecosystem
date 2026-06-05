@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
+import { EcosystemBackButton } from '@/components/EcosystemBackButton'
 import './globals.css'
 
 const inter = Inter({ subsets: ['latin', 'cyrillic'] })
@@ -15,7 +16,10 @@ export const dynamic = 'force-dynamic'
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru">
-      <body className={inter.className}>{children}</body>
+      <body className={inter.className}>
+        {children}
+        <EcosystemBackButton />
+      </body>
     </html>
   )
 }

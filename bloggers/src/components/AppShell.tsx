@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Header } from "@/components/Header";
+import { EcosystemBackButton } from "@/components/EcosystemBackButton";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { usePanelData } from "@/context/PanelDataContext";
 
@@ -85,6 +86,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
       </div>
       <MobileBottomNav />
+      <EcosystemBackButton aboveBottomNav />
     </div>
   );
 }

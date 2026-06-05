@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import { EcosystemBackButton } from "@/components/EcosystemBackButton";
 
 export const metadata: Metadata = {
   title: "Зарплаты сотрудников",
@@ -13,7 +14,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ru">
-      <body>{children}</body>
+      <body>
+        {children}
+        <EcosystemBackButton />
+      </body>
     </html>
   );
 }
